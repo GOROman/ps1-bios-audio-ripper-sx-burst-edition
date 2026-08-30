@@ -94,7 +94,7 @@ header{position:relative;max-width:none;min-height:clamp(300px,42vw,500px)}heade
 .course-sector.error{stroke:#ed294a;filter:drop-shadow(0 0 8px #ff263f)}
 .blocks #grid>i{opacity:0;width:3.2%;height:8px;min-width:18px;pointer-events:none}
 .blocks #grid>i:last-of-type{opacity:1;width:2.5%;height:34px}
-#course-car{width:clamp(22px,2.7vw,38px);height:auto;aspect-ratio:259/757;background-image:url("race-car-sprites.png?v=2");background-size:800% 100%;background-position:0 0;transform:translate(-50%,-50%) rotate(calc(var(--car-angle,0deg) + 90deg))}
+#course-car{width:clamp(22px,2.7vw,38px);height:auto;aspect-ratio:259/757;background-image:url("race-car-sprites.png?v=2");background-size:800% 100%;background-position:0 0;transform:translate(-50%,-50%) rotate(calc(var(--car-angle,0deg) + 90deg));transition:left .12s linear,top .12s linear}
 #course-car.idle{display:block;background-position:0 0;animation:none;filter:drop-shadow(0 3px 2px #000) drop-shadow(0 0 4px #ff4a18)}
 #course-car.running{animation:course-car-frames .6s step-end infinite}
 #course-car.crash{background-position:100% 0;transform:translate(-50%,-50%) rotate(calc(var(--car-angle,0deg) + 78deg)) scale(1.18)}
