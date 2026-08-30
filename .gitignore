@@ -1,0 +1,8 @@
+build/
+__pycache__/
+*.pyc
+*.wav
+ps1-bios.bin
+
+build-docker/
+build-norm/

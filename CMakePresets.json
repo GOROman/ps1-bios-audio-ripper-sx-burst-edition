@@ -1,0 +1,1 @@
+{"version":3,"configurePresets":[{"name":"default","generator":"Ninja","binaryDir":"${sourceDir}/build","toolchainFile":"$env{PSN00BSDK_LIBS}/cmake/sdk.cmake"}],"buildPresets":[{"name":"default","configurePreset":"default"}]}

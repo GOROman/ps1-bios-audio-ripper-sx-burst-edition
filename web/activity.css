@@ -1,0 +1,143 @@
+body,
+button,
+select {
+  font-family: ui-rounded, "Hiragino Maru Gothic ProN", "Hiragino Maru Gothic Pro",
+    "M PLUS Rounded 1c", system-ui, sans-serif;
+}
+
+/* Burst Edition accent overrides. */
+#hud{border-color:#b63248;background:rgb(34 4 9 / 92%)}
+#hud-rate{color:#ffb020}
+#activity.fsk-on,#activity.ofdm-on{filter:drop-shadow(0 0 7px #ff4a18)}
+
+.card {
+  background:
+    linear-gradient(135deg, rgb(255 255 255 / 8%) 0%, transparent 32%),
+    linear-gradient(145deg, rgb(17 38 72 / 8%), rgb(5 15 37 / 2%));
+  border-color: rgb(210 236 255 / 48%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 28%),
+    inset 0 -1px 0 rgb(70 150 255 / 8%),
+    0 14px 34px rgb(0 0 0 / 18%);
+  -webkit-backdrop-filter: blur(2px) brightness(96%);
+  backdrop-filter: blur(2px) brightness(96%);
+}
+
+button,
+select {
+  border-color: rgb(170 218 255 / 36%);
+  background-color: rgb(19 36 72 / 18%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%);
+}
+
+#activity {
+  position: fixed;
+  z-index: 20;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(18px, env(safe-area-inset-right));
+  width: clamp(2.2rem, 5.5vw, 3.6rem);
+  aspect-ratio: 1;
+  font-size: 0;
+  color: transparent;
+  background-color: transparent;
+  -webkit-mask: var(--star) center / contain no-repeat;
+  mask: var(--star) center / contain no-repeat;
+  image-rendering: pixelated;
+  pointer-events: none;
+  transition: background-color 40ms, filter 40ms;
+  --star: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%209%209%27%20shape-rendering%3D%27crispEdges%27%3E%3Cg%20fill%3D%27%23fff%27%3E%3Crect%20x%3D%274%27%20y%3D%270%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%270%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%271%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%271%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%272%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%272%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%273%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%273%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%275%27%20y%3D%274%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%272%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%276%27%20y%3D%275%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%271%27%20y%3D%276%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%276%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%277%27%20y%3D%276%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%270%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%278%27%20y%3D%277%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3Crect%20x%3D%274%27%20y%3D%278%27%20width%3D%271%27%20height%3D%271%27%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+}
+
+/* Top-right progress HUD (percent + elapsed) — same spec as ps1-bios-ripper-zx. */
+#hud {
+  position: fixed;
+  right: 24px;
+  top: 104px;
+  z-index: 1000;
+  padding: 8px 14px;
+  border: 1px solid #52617a;
+  border-radius: 8px;
+  background: rgb(16 19 27 / 88%);
+  box-shadow: 0 4px 18px #0008;
+  font: 700 42px/1.1 ui-monospace, monospace;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+#hud-rate { font-size: .48em; color: #6ee9ff; }
+#hud[aria-hidden="true"] { display: none; }
+#hud.err { color: #ff5267; border-color: #ff5267; background: rgb(40 16 19 / 90%); }
+@media (max-width: 600px) {
+  #hud { top: 140px; right: 12px; font-size: clamp(1.25rem, 7vw, 2rem) !important; }
+}
+
+/* FSK: bit=1 -> visible white; bit=0 -> transparent (base). */
+#activity.fsk-on {
+  background-color: #eaf4ff;
+  filter: drop-shadow(0 0 6px #9fd4ff);
+}
+
+/* OFDM packet / whole-image OK -> steady white. */
+#activity.ok {
+  background-color: #ffffff;
+  filter: drop-shadow(0 0 8px #7dffb0);
+}
+
+/* OFDM reception in progress -> blinking. */
+#activity.ofdm {
+  background-color: #eaf4ff;
+  filter: drop-shadow(0 0 7px #9fd4ff);
+  animation: activity-blink .5s steps(1, end) infinite;
+}
+@keyframes activity-blink { 0%, 50% { opacity: 1 } 50.01%, 100% { opacity: .12 } }
+@media (prefers-reduced-motion: reduce) { #activity.ofdm { animation: none } }
+
+/* OFDM packet / BIOS rebuild error -> red. */
+#activity.err {
+  background-color: #ff2d2d;
+  filter: drop-shadow(0 0 3px #000) drop-shadow(0 0 12px #ff2d2d);
+}
+
+.status {
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.protocol {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.protocol[hidden] { display: none; }
+
+.protocol div { display: grid; gap: 5px; min-width: 0; }
+.protocol span { color: var(--muted); font-size: .75rem; }
+.protocol strong { overflow-wrap: anywhere; font-size: .9rem; }
+
+.block-head small {
+  color: var(--muted);
+  font-size: .7rem;
+  font-weight: 500;
+}
+
+.log-card pre {
+  font-family: "Courier New", ui-monospace, monospace;
+  line-height: 1.55;
+  text-shadow: 0 0 6px #50d8ff66;
+}
+
+@media (max-width: 720px) {
+  .status { grid-template-columns: 1fr 1fr; }
+  .protocol { grid-template-columns: 1fr 1fr; }
+  #activity { font-size: 2.4rem; }
+}
+
+/* Burst Edition final theme overrides. */
+.card{border-color:rgb(190 50 70 / 62%);background:linear-gradient(135deg,rgb(255 255 255 / 6%) 0%,transparent 32%),linear-gradient(145deg,rgb(72 8 16 / 82%),rgb(24 3 6 / 76%));box-shadow:inset 0 1px 0 rgb(255 210 210 / 18%),0 14px 34px rgb(0 0 0 / 32%)}
+button,select{border-color:rgb(255 88 70 / 48%);background-color:rgb(74 6 14 / 70%)}
+#hud{border-color:#b63248;background:rgb(34 4 9 / 92%)}
+#hud-rate{color:#ffb020}
+#activity.fsk-on,#activity.ofdm{filter:drop-shadow(0 0 7px #ff4a18)}

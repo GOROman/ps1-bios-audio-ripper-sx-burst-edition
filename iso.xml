@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<iso_project image_name="ps1sx.bin" cue_sheet="ps1sx.cue">
+  <track type="data">
+    <identifiers system="PLAYSTATION" application="PS1 BIOS AUDIO RIPPER SX" volume="PS1SX" volume_set="PS1SX" publisher="GOROMAN" />
+    <directory_tree>
+      <file name="SYSTEM.CNF" type="data" source="${PROJECT_SOURCE_DIR}/SYSTEM.CNF"/>
+      <file name="PS1SX.EXE" type="data" source="ps1sx.exe"/>
+      <dummy sectors="1024"/>
+    </directory_tree>
+  </track>
+</iso_project>

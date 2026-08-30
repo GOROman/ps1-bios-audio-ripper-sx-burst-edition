@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#180306"><title>PS1 BIOS Audio Ripper SX — Burst Edition</title><link rel="stylesheet" href="style.css?v=57"><link rel="stylesheet" href="activity.css?v=20"></head>
+<body><div id="activity" aria-label="データ受信インジケーター" aria-hidden="true">*</div><div id="hud" aria-hidden="true"><span id="hud-progress">0.00%（0/—） 0.00秒</span><small id="hud-rate">実効 0 bps</small></div><main>
+  <header><div><h1><img class="site-logo" src="logo.png?v=1" alt="PS1 BIOS Audio Ripper SX — Burst Edition"></h1><p>実機PlayStationから180秒以内のBIOS音声転送を目指します。</p></div></header>
+  <section class="card intro"><h2>これは何？</h2><p>所有する初代PlayStationの512 KiB BIOSを、アナログ音声出力から<strong>180秒以内</strong>にブラウザへ転送することを目標とした高速実験版です。受信・復調・誤り検出／訂正・BIOS再構成はブラウザ内で完結し、BIOSデータをサーバーへ送信しません。</p><p><strong>現在は開発中です。</strong>エミュレータ起動と合成信号の成功は、物理PlayStationからの完全回収を保証しません。実機達成まではUNVERIFIEDとして扱います。</p></section>
+  <section class="controls card"><button id="toggle" class="attract">音声入力を開始</button><button id="reset" type="button">受信リセット</button><label>入力<select id="device"><option value="">既定の音声入力</option></select></label></section>
+  <section class="status card"><div><span>状態</span><strong id="state">停止中</strong></div><div><span>入力</span><strong id="format">未接続</strong></div><div><span>受信時間</span><strong id="elapsed">0.00 s</strong></div><div><span>推定所要時間</span><strong id="eta">—</strong></div><div><span>レベル</span><strong id="level">-∞ dBFS</strong></div></section>
+  <aside class="card blocks"><div class="block-head"><h2>受信ブロック <small id="block-spec">32 KiB × 16</small></h2><strong id="percent">0%</strong></div><div class="legend"><span><i class="missing"></i>未受信</span><span><i class="receiving"></i>受信中</span><span><i class="fec-recovering"></i>訂正中</span><span><i class="complete"></i>完了</span><span><i class="error"></i>CRCエラー</span></div><div id="grid" aria-label="1ブロック1周の受信コース"></div><div id="lap-times" class="lap-times" aria-live="polite"><span>BLOCK LAP TIME</span><strong>—</strong></div><p id="block-header" class="block-header">OFDM STREAM V6: 待機</p><p id="summary">完了 0 / エラー 0 / 未受信 16 blocks</p></aside>
+  <div class="monitor-layout"><div class="monitor-stack"><section class="card level-card" aria-label="入力レベルメーター">
+    <div class="level-head"><h2>INPUT LEVEL</h2><strong id="level-guide">信号待ち</strong></div>
+    <div class="meter-row"><span>L</span><div class="meter"><i id="meter-l"></i><b class="hold" id="hold-l"></b><b class="target" title="推奨レベル"></b></div><output id="db-l">-∞</output></div>
+    <div class="meter-row"><span>R</span><div class="meter"><i id="meter-r"></i><b class="hold" id="hold-r"></b><b class="target" title="推奨レベル"></b></div><output id="db-r">-∞</output></div>
+    <div class="meter-scale" aria-hidden="true"><span>-60</span><span>-36</span><span>-18</span><span>-12</span><span>-6</span><span>0 dBFS</span></div>
+    <label class="gain-control"><span>レベル補正</span><input id="input-gain" type="range" min="-12" max="18" step="0.5" value="0"><output id="input-gain-value">+0.0 dB</output></label>
+  </section>
+  </div>
+  <section class="card signal"><h2>Audio L/R</h2><canvas id="scope" width="720" height="220"></canvas><p id="detail">音声入力を開始してください。連続ステレオOFDMを専用Workerで復調します。</p></section></div>
+  <section class="card telemetry" aria-label="音声入力解析">
+    <div class="telemetry-head"><h2>LIVE SIGNAL ANALYZER</h2><label class="analyzer-toggle"><input id="analyzer-enabled" type="checkbox" checked>解析ON</label><small>OFDM音声のリアルタイム推定値</small></div>
+    <div class="telemetry-grid">
+      <div><span>推定SNR</span><strong id="snr">— dB</strong></div><div><span>OFDM帯域ピーク</span><strong id="tone">— Hz</strong></div>
+      <div><span>高域 / 低域</span><strong id="tone-ratio">— dB</strong></div><div><span>L/Rバランス</span><strong id="balance">— dB</strong></div>
+      <div><span>ピーク L / R</span><strong id="peaks">— / —</strong></div><div><span>RMS L / R</span><strong id="rms-pair">— / —</strong></div>
+      <div><span>クレスト L / R</span><strong id="crest">— / —</strong></div><div><span>DC L / R</span><strong id="dc">— / —</strong></div>
+      <div><span>ステレオ相関</span><strong id="correlation">—</strong></div><div><span>クリップ</span><strong id="clips">0 samples</strong></div>
+      <div><span>AudioContext</span><strong id="context-info">未接続</strong></div><div><span>音声補正</span><strong id="processing">AGC OFF / NS OFF / EC OFF</strong></div>
+      <div><span>スレッド</span><strong id="threads">MAIN 1 / WORKER 2 / FEC 0</strong></div>
+    </div>
+  </section>
+  <section class="protocol card" hidden><div><span>信号</span><strong id="signal-progress">待機</strong></div><div><span>OFDM同期</span><strong id="sync-quality">未同期</strong></div><div><span>転送データ</span><strong id="payload-info">未確定</strong></div><div><span>OFDM</span><strong id="ofdm-state">未開始</strong></div></section>
+  <section class="decode-layout single">
+    <section class="card decode-card"><div class="decode-head"><h2>OFDM DECODER</h2><strong id="decode-badge">IDLE</strong></div><div class="decode-grid">
+      <div><span>同期</span><strong id="ofdm-sync">SEARCH</strong></div><div><span>パケット</span><strong id="ofdm-packets">0 / ?</strong></div>
+      <div><span>シンボル</span><strong id="ofdm-symbol">— / 4</strong></div><div><span>相関</span><strong id="ofdm-correlation">—</strong></div>
+      <div><span>CFO / 位相</span><strong id="ofdm-cfo">—</strong></div><div><span>SNR / EVM</span><strong id="ofdm-quality">—</strong></div>
+      <div><span>変調</span><strong id="ofdm-qam">QPSK / 96 carriers</strong></div><div><span>Packet CRC</span><strong id="ofdm-crc">0 OK / 0 NG</strong></div>
+      <div><span>FEC</span><strong id="ofdm-fec">32+4 / 待機</strong></div><div><span>復元</span><strong id="ofdm-recovered">0 bytes</strong></div>
+      <div><span>実効速度</span><strong id="ofdm-rate">0 kbps</strong></div><div><span>ドロップ</span><strong id="ofdm-drops">0</strong></div>
+    </div></section>
+  </section>
+  <section class="card log-card"><details open><summary>受信ログ</summary><pre id="log"></pre></details></section>
+</main><dialog id="complete-dialog" class="complete-dialog"><div class="complete-dialog-head"><div><small>ALL CRC32 VERIFIED</small><h2>BIOS受信完了</h2></div><button id="close-complete" type="button" aria-label="閉じる">×</button></div><p>512 KiB BIOSを正常に復元しました。</p><div id="transfer-stats" class="transfer-stats" hidden></div><a id="download" class="save-bios" aria-disabled="true" download="ps1-bios.bin">BIOSをダウンロード</a></dialog><footer>考案: <a href="https://x.com/Imaha486">はむ（@Imaha486）さん</a> · 元ネタ: <a href="https://i486.mods.jp/ichild/ps1bios">特別な機器に頼らず初代プレステのBIOSを吸い出す！</a></footer><script src="app.js?v=121"></script></body></html>
