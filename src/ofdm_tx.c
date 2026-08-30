@@ -23,6 +23,14 @@
 #define FIFO_CAPACITY 8u
 #define START_PACKETS FIFO_CAPACITY
 #define PRECOMPUTE_PACKETS (SX_OFDM_TOTAL_SHARDS * 2u)
+#define START_SIGNAL_ADDR 0x68000u
+#define START_BEEP_SHORT_SAMPLES 19404u /* 440 ms */
+#define START_BEEP_GAP_SAMPLES  15876u /* 360 ms */
+#define START_BEEP_LONG_SAMPLES 61740u /* 1400 ms */
+#define START_BEEP_TAIL_SAMPLES  8820u /* 200 ms */
+#define START_SIGNAL_SAMPLES (START_BEEP_SHORT_SAMPLES * 2u + START_BEEP_GAP_SAMPLES * 2u + START_BEEP_LONG_SAMPLES + START_BEEP_TAIL_SAMPLES)
+#define START_SIGNAL_BLOCKS ((START_SIGNAL_SAMPLES + SX_SPU_ADPCM_SAMPLES_PER_BLOCK - 1u) / SX_SPU_ADPCM_SAMPLES_PER_BLOCK)
+#define START_SIGNAL_BYTES (START_SIGNAL_BLOCKS * SX_SPU_ADPCM_BLOCK_BYTES)
 
 static sx_ofdm_tx_status_t status;
 static const uint8_t *source;
@@ -38,6 +46,9 @@ static volatile int drain_vsync;
 static int refresh_rate, precompute_mode, precompute_start_vsync;
 static size_t packet_samples, playback_packet_samples, adpcm_blocks, channel_bytes, chunk_bytes;
 static uint8_t packet[SX_OFDM_PACKET_BYTES];
+static uint8_t start_signal_adpcm[START_SIGNAL_BYTES] __attribute__((aligned(4)));
+static uint8_t start_signal_ready, start_signal_playing;
+static int start_signal_vsync;
 static unsigned audio_mode;
 static int16_t pcm[2][SX_OFDM_MAX_PACKET_SAMPLES];
 static void *old_spu_callback, *old_dma_callback;
@@ -52,6 +63,69 @@ static void stop_channels(void) {
     SPU_CH_VOL_L(3) = SPU_CH_VOL_R(3) = 0;
     SpuSetKey(0, 0x0f);
     SPU_CTRL &= ~(1 << 6);
+}
+
+static int16_t triangle_tone(unsigned sample, unsigned length, unsigned frequency) {
+    uint32_t phase = (uint32_t)(((uint64_t)sample * frequency * 65536u) / SX_SAMPLE_RATE) & 0xffffu;
+    int32_t triangle;
+    if (phase < 16384u) triangle = (int32_t)phase * 2;
+    else if (phase < 49152u) triangle = 32768 - (int32_t)(phase - 16384u) * 2;
+    else triangle = -32768 + (int32_t)(phase - 49152u) * 2;
+    unsigned fade = 220u;
+    unsigned gain = sample < fade ? sample : (length - 1u - sample < fade ? length - 1u - sample : fade);
+    return (int16_t)(((int64_t)triangle * 15000 * (int32_t)gain) /
+                     (32768 * (int32_t)fade));
+}
+
+static int16_t start_signal_sample(unsigned sample) {
+    if (sample < START_BEEP_SHORT_SAMPLES)
+        return triangle_tone(sample, START_BEEP_SHORT_SAMPLES, 1800u);
+    sample -= START_BEEP_SHORT_SAMPLES;
+    if (sample < START_BEEP_GAP_SAMPLES) return 0;
+    sample -= START_BEEP_GAP_SAMPLES;
+    if (sample < START_BEEP_SHORT_SAMPLES)
+        return triangle_tone(sample, START_BEEP_SHORT_SAMPLES, 1800u);
+    sample -= START_BEEP_SHORT_SAMPLES;
+    if (sample < START_BEEP_GAP_SAMPLES) return 0;
+    sample -= START_BEEP_GAP_SAMPLES;
+    if (sample < START_BEEP_LONG_SAMPLES)
+        return triangle_tone(sample, START_BEEP_LONG_SAMPLES, 900u);
+    return 0;
+}
+
+static void prepare_start_signal(void) {
+    if (start_signal_ready) return;
+    sx_spu_adpcm_state_t state;
+    sx_spu_adpcm_reset(&state);
+    for (unsigned block = 0; block < START_SIGNAL_BLOCKS; block++) {
+        int16_t samples[SX_SPU_ADPCM_SAMPLES_PER_BLOCK];
+        for (unsigned i = 0; i < SX_SPU_ADPCM_SAMPLES_PER_BLOCK; i++) {
+            unsigned at = block * SX_SPU_ADPCM_SAMPLES_PER_BLOCK + i;
+            samples[i] = at < START_SIGNAL_SAMPLES ? start_signal_sample(at) : 0;
+        }
+        sx_spu_adpcm_encode_block_fast(&state, samples,
+            block + 1u == START_SIGNAL_BLOCKS ? 1u : 0u,
+            start_signal_adpcm + block * SX_SPU_ADPCM_BLOCK_BYTES);
+    }
+    start_signal_ready = 1;
+}
+
+static void start_signal(void) {
+    prepare_start_signal();
+    stop_channels();
+    SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
+    SpuSetTransferStartAddr(START_SIGNAL_ADDR);
+    SpuWrite((const uint32_t *)start_signal_adpcm, START_SIGNAL_BYTES);
+    SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
+    SPU_CH_ADDR(2) = SPU_CH_ADDR(3) = getSPUAddr(START_SIGNAL_ADDR);
+    SPU_CH_FREQ(2) = SPU_CH_FREQ(3) = getSPUSampleRate(SX_SAMPLE_RATE);
+    SPU_CH_ADSR1(2) = SPU_CH_ADSR1(3) = 0x00ff;
+    SPU_CH_ADSR2(2) = SPU_CH_ADSR2(3) = 0;
+    SPU_CH_VOL_L(2) = 0x2fff; SPU_CH_VOL_R(2) = 0;
+    SPU_CH_VOL_L(3) = 0; SPU_CH_VOL_R(3) = 0x2fff;
+    SpuSetKey(1, 0x0c);
+    start_signal_vsync = VSync(-1);
+    start_signal_playing = 1;
 }
 
 static void spu_dma_handler(void) {
@@ -226,7 +300,7 @@ int sx_ofdm_tx_begin(const uint8_t *data, size_t size) {
     chunk_bytes = channel_bytes * 2u;
     next_packet = 0;
     fifo_head = fifo_tail = fifo_count = 0;
-    terminal_generated = dma_busy = stream_active = 0;
+    terminal_generated = dma_busy = stream_active = start_signal_playing = 0;
     playback_hold = 1;
     refresh_rate = GetVideoMode() == MODE_PAL ? 50 : 60;
     precompute_mode = packet_count <= PRECOMPUTE_PACKETS;
@@ -250,6 +324,18 @@ void sx_ofdm_tx_release(void) { playback_hold = 0; }
 
 void sx_ofdm_tx_update(void) {
     if (status.phase == SX_OFDM_TX_IDLE || status.phase == SX_OFDM_TX_DONE || status.phase == SX_OFDM_TX_ERROR) return;
+    if (start_signal_playing) {
+        int frames = VSync(-1) - start_signal_vsync;
+        int needed = (int)((START_SIGNAL_SAMPLES * (unsigned)refresh_rate + SX_SAMPLE_RATE - 1u) / SX_SAMPLE_RATE) + 1;
+        if (frames >= needed) {
+            SpuSetKey(0, 0x0c);
+            SPU_CH_VOL_L(2) = SPU_CH_VOL_R(2) = 0;
+            SPU_CH_VOL_L(3) = SPU_CH_VOL_R(3) = 0;
+            start_signal_playing = 0;
+            if (precompute_mode) start_precomputed(); else start_stream();
+        }
+        return;
+    }
     if (precompute_mode) {
         if (status.phase == SX_OFDM_TX_PLAYING) {
             int frames = VSync(-1) - precompute_start_vsync;
@@ -274,7 +360,7 @@ void sx_ofdm_tx_update(void) {
             status.last_generate_frames = (uint8_t)frames;
             if (frames > status.max_generate_frames) status.max_generate_frames = (uint8_t)frames;
         }
-        if (!playback_hold && next_packet == packet_count) start_precomputed();
+        if (!playback_hold && next_packet == packet_count) start_signal();
         return;
     }
     if (status.phase == SX_OFDM_TX_DRAINING) {
@@ -311,7 +397,7 @@ void sx_ofdm_tx_update(void) {
         FastExitCriticalSection();
     }
     if (!playback_hold && status.phase == SX_OFDM_TX_BUFFERING &&
-        (fifo_count >= START_PACKETS || terminal_generated)) start_stream();
+        (fifo_count >= START_PACKETS || terminal_generated)) start_signal();
     if (status.total_packets) {
         unsigned played = status.played_packet;
         if (played > status.total_packets) played = status.total_packets;
@@ -321,7 +407,7 @@ void sx_ofdm_tx_update(void) {
 
 void sx_ofdm_tx_stop(void) {
     stop_channels();
-    stream_active = 0;
+    stream_active = start_signal_playing = 0;
     if (callbacks_installed) {
         int restore = EnterCriticalSection();
         InterruptCallback(IRQ_SPU, old_spu_callback);
