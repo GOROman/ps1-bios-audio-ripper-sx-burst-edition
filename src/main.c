@@ -283,6 +283,7 @@ int main(void) {
     unsigned compression_elapsed_ms =
         (unsigned)(((uint32_t)VSync(-1) - compression_start_frame) * 1000u / 60u);
     const sx_container_diagnostics_t *diagnostics = sx_container_diagnostics();
+    sx_ofdm_tx_prepare_start_signal();
     compression_done(packed, compression_elapsed_ms, diagnostics);
     if (!packed) compression_error_loop(diagnostics);
     switch_to_transfer_video();
@@ -365,7 +366,7 @@ int main(void) {
         }
         /* Do not spend another video frame drawing while the real-time audio
          * FIFO needs data. SPU IRQ/DMA continues independently. */
-        if (tx->phase == SX_TX_SENDING || tx->phase == SX_TX_PREPARING) {
+        if (!clear_text_frames && tx->phase == SX_TX_SENDING) {
             const sx_ofdm_tx_status_t *ofdm = sx_ofdm_tx_status();
             if (ofdm->generated_packets < ofdm->total_packets &&
                 ofdm->fifo_packets < ofdm->fifo_capacity) continue;
@@ -382,7 +383,7 @@ int main(void) {
             else transfer_remaining -= (unsigned)(((uint64_t)transfer_remaining * transfer_progress) / 1000u);
         }
         draw_ui(page, transferring ? 128 : 96, transfer_progress, transferring, 0);
-        if (command_issued)
+        if (command_issued && !clear_text_frames)
             FntPrint(compression_percent_font, "%3u.%u%%", transfer_progress / 10u, transfer_progress % 10u);
         if (clear_text_frames) {
             clear_text_frames--;
@@ -402,6 +403,15 @@ int main(void) {
             FntPrint(status_font, "GENERATED %u / PLAYED %u / %u\nFIFO %u / %u\n",
                 ofdm->generated_packets, ofdm->played_packet, ofdm->total_packets,
                 ofdm->fifo_packets, ofdm->fifo_capacity);
+            goto render_frame;
+        }
+        if (command_issued && tx->phase == SX_TX_PREPARING) {
+            const sx_ofdm_tx_status_t *ofdm = sx_ofdm_tx_status();
+            FntPrint(status_font, "PS1 BIOS RIPPER SX\n\n");
+            FntPrint(status_font, "PREPARING...\n\n");
+            FntPrint(status_font, "FILLING OFDM FIFO\n");
+            FntPrint(status_font, "%u / %u PACKETS\n", ofdm->fifo_packets, ofdm->fifo_capacity);
+            FntPrint(status_font, "GENERATED %u / %u\n", ofdm->generated_packets, ofdm->total_packets);
             goto render_frame;
         }
         if (!command_issued) {

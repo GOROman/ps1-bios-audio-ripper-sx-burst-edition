@@ -20,7 +20,10 @@
 #define MAX_ADPCM_BLOCKS ((SX_OFDM_MAX_PACKET_SAMPLES + SX_SPU_ADPCM_SAMPLES_PER_BLOCK - 1u) / SX_SPU_ADPCM_SAMPLES_PER_BLOCK)
 #define MAX_CHANNEL_BYTES (MAX_ADPCM_BLOCKS * SX_SPU_ADPCM_BLOCK_BYTES)
 #define MAX_CHUNK_BYTES (MAX_CHANNEL_BYTES * 2u)
-#define FIFO_CAPACITY 8u
+/* Build a substantial safety margin before starting SPU playback.  The
+ * encoder occasionally needs more than one video frame for a packet on a
+ * real PS1, so eight packets are not enough to absorb scheduler jitter. */
+#define FIFO_CAPACITY 32u
 #define START_PACKETS FIFO_CAPACITY
 #define PRECOMPUTE_PACKETS (SX_OFDM_TOTAL_SHARDS * 2u)
 #define START_SIGNAL_ADDR 0x68000u
@@ -154,13 +157,19 @@ static void prepare_start_signal(void) {
     start_signal_ready = 1;
 }
 
+void sx_ofdm_tx_prepare_start_signal(void) {
+    if (!start_signal_adpcm)
+        start_signal_adpcm = malloc(START_SIGNAL_BYTES);
+    if (start_signal_adpcm) prepare_start_signal();
+}
+
 static int prepare_fanfare(void) {
     fanfare_ready = 1;
     return 1;
 }
 
 static void start_signal(void) {
-    prepare_start_signal();
+    sx_ofdm_tx_prepare_start_signal();
     stop_channels();
     SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
     SpuSetTransferStartAddr(START_SIGNAL_ADDR);

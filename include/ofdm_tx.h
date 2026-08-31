@@ -28,6 +28,7 @@ typedef struct {
 } sx_ofdm_tx_status_t;
 
 int sx_ofdm_tx_begin(const uint8_t *data, size_t size);
+void sx_ofdm_tx_prepare_start_signal(void);
 void sx_ofdm_tx_release(void);
 void sx_ofdm_tx_set_audio_mode(unsigned mode);
 void sx_ofdm_tx_update(void);
