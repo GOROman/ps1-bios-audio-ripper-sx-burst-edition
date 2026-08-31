@@ -27,7 +27,11 @@ static DRAWENV draw[2];
 static uint8_t pad_data[2][34];
 static uint8_t container[CONTAINER_CAP];
 static int startup_page;
+#ifdef SX_DEFAULT_CONTAINER_V2
+static sx_container_mode_t container_mode = SX_CONTAINER_V2_LZMA2;
+#else
 static sx_container_mode_t container_mode = SX_CONTAINER_MIXED;
+#endif
 #define BURST_AUDIO_MODE 0u /* Burst Edition is always normal stereo. */
 static unsigned wire_block_kib = SX_WIRE_BLOCK_DEFAULT_BYTES / 1024u;
 static TILE ui_tile[2][4];
@@ -100,10 +104,12 @@ static void compression_progress(uint16_t completed, uint16_t total, size_t stor
     (void)user;
     unsigned permille = total ? completed * 1000u / total : 0;
     unsigned elapsed_ms = (unsigned)(((uint32_t)VSync(-1) - compression_start_frame) * 1000u / 60u);
+    const int v2 = container_mode == SX_CONTAINER_V2_LZMA2;
     draw_ui(startup_page, 128, permille, 0, 1);
     FntPrint(status_font, "PS1 BIOS AUDIO RIPPER SX\n\n");
-    FntPrint(status_font, "MIXED CODEC COMPRESSING...\n\n");
-    FntPrint(status_font, "BLOCK %03u/%03u\n", completed, total);
+    FntPrint(status_font, "%s COMPRESSING...\n\n", v2 ? "V2 LZMA2" : "MIXED CODEC");
+    if (v2) FntPrint(status_font, "AREA STREAM\n");
+    else FntPrint(status_font, "BLOCK %03u/%03u\n", completed, total);
     FntPrint(status_font, "PROGRESS %3u.%u%%\n", permille / 10u, permille % 10u);
     FntPrint(status_font, "ELAPSED %02u:%02u.%03u\n",
         elapsed_ms / 60000u, (elapsed_ms / 1000u) % 60u, elapsed_ms % 1000u);
@@ -113,7 +119,8 @@ static void compression_progress(uint16_t completed, uint16_t total, size_t stor
     DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
 }
 
-static void compression_done(size_t packed, unsigned elapsed_ms) {
+static void compression_done(size_t packed, unsigned elapsed_ms,
+                             const sx_container_diagnostics_t *diagnostics) {
     unsigned ratio_hundredths = 0;
     if (SX_TRANSFER_SIZE) {
         unsigned scaled = (unsigned)((packed * 100u) / SX_TRANSFER_SIZE);
@@ -122,17 +129,56 @@ static void compression_done(size_t packed, unsigned elapsed_ms) {
             (unsigned)((remainder * 100u) / SX_TRANSFER_SIZE);
     }
     unsigned saved = packed < SX_TRANSFER_SIZE ? (unsigned)(SX_TRANSFER_SIZE - packed) : 0;
+    const int v2 = container_mode == SX_CONTAINER_V2_LZMA2;
     draw_ui(startup_page, 128, 1000, 0, 1);
-    FntPrint(status_font, "MIXED CODEC COMPLETE\n\n");
+    if (!packed) {
+        FntPrint(status_font, "COMPRESSION ERROR\n\n");
+        FntPrint(status_font, "STAGE V2 LZMA2\n");
+        if (diagnostics && diagnostics->lzma_failures)
+            FntPrint(status_font, "AREA %u ERROR E%u\n", diagnostics->lzma_last_area,
+                     (unsigned)diagnostics->lzma_last_error);
+        else
+            FntPrint(status_font, "CONTAINER BUILD FAILED\n");
+        FntPrint(status_font, "REQUEST %u BYTES\n", diagnostics ?
+                 (unsigned)diagnostics->lzma_last_request : 0u);
+        FntFlush(status_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
+        for (unsigned frame = 0; frame < 120u; frame++) VSync(0);
+        return;
+    }
+    FntPrint(status_font, "%s COMPLETE\n\n", v2 ? "V2 LZMA2" : "MIXED CODEC");
     FntPrint(status_font, "TIME %02u:%02u.%03u\n",
         elapsed_ms / 60000u, (elapsed_ms / 1000u) % 60u, elapsed_ms % 1000u);
     FntPrint(status_font, "STORED %u BYTES\n", (unsigned)packed);
     FntPrint(status_font, "RATIO %u.%02u%%\n", ratio_hundredths / 100u, ratio_hundredths % 100u);
     FntPrint(status_font, "SAVED %u BYTES\n", saved);
+    if (diagnostics && diagnostics->lzma_failures)
+        FntPrint(status_font, "LZMA ERROR A%u E%u R%u -> RAW\n", diagnostics->lzma_last_area,
+                 (unsigned)diagnostics->lzma_last_error,
+                 (unsigned)diagnostics->lzma_last_request);
+    else if (diagnostics && diagnostics->lzma_raw_fallbacks)
+        FntPrint(status_font, "LZMA NOT SMALLER -> RAW\n");
     FntPrint(compression_percent_font, "100.0%%");
     FntFlush(status_font); FntFlush(compression_percent_font);
     DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
     for (unsigned frame = 0; frame < 60u; frame++) VSync(0);
+}
+
+static void compression_error_loop(const sx_container_diagnostics_t *diagnostics) {
+    for (;;) {
+        draw_ui(startup_page, 128, 0, 0, 1);
+        FntPrint(status_font, "PS1 BIOS AUDIO RIPPER SX\n\n");
+        FntPrint(status_font, "COMPRESSION ERROR\n\n");
+        FntPrint(status_font, "STAGE V2 LZMA2\n");
+        if (diagnostics && diagnostics->lzma_failures) {
+            FntPrint(status_font, "AREA %u ERROR E%u\n", diagnostics->lzma_last_area,
+                     (unsigned)diagnostics->lzma_last_error);
+            FntPrint(status_font, "REQUEST %u BYTES\n", (unsigned)diagnostics->lzma_last_request);
+        } else {
+            FntPrint(status_font, "CONTAINER BUILD FAILED\n");
+        }
+        FntPrint(status_font, "NO AUDIO TRANSMISSION\n");
+        FntFlush(status_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
+    }
 }
 
 static void switch_to_transfer_video(void) {
@@ -190,7 +236,8 @@ int main(void) {
     FntPrint(status_font, "PS1 BIOS AUDIO RIPPER SX\n");
     FntPrint(status_font, "VERSION %s / WIRE V%u\n", SX_APP_VERSION, SX_WIRE_VERSION);
     FntPrint(status_font, "BUILD %s %s\n\n", __DATE__, __TIME__);
-    FntPrint(status_font, "MIXED CODEC PREPARING...\n");
+    FntPrint(status_font, "%s PREPARING...\n",
+        container_mode == SX_CONTAINER_V2_LZMA2 ? "V2 LZMA2" : "MIXED CODEC");
     FntFlush(status_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
     uint32_t crc = sx_crc32(bios, SX_BIOS_SIZE, 0);
     compression_start_frame = (uint32_t)VSync(-1);
@@ -198,10 +245,22 @@ int main(void) {
                                                      compression_progress, 0, container_mode);
     unsigned compression_elapsed_ms =
         (unsigned)(((uint32_t)VSync(-1) - compression_start_frame) * 1000u / 60u);
-    compression_done(packed, compression_elapsed_ms);
+    const sx_container_diagnostics_t *diagnostics = sx_container_diagnostics();
+    compression_done(packed, compression_elapsed_ms, diagnostics);
+    if (!packed) compression_error_loop(diagnostics);
     switch_to_transfer_video();
-    unsigned lzss_blocks = 0, deflate_blocks = 0, raw_blocks = 0;
-    if (packed >= sizeof(sx_header_t)) {
+    unsigned lzss_blocks = 0, deflate_blocks = 0, lzma_blocks = 0, raw_blocks = 0;
+    if (container_mode == SX_CONTAINER_V2_LZMA2 && packed >= sizeof(sx_v2_header_t)) {
+        const sx_v2_header_t *header = (const sx_v2_header_t *)container;
+        for (unsigned i = 0; i < header->area_count; i++) {
+            const sx_v2_area_header_t *area = (const sx_v2_area_header_t *)
+                (container + sizeof(*header) + i * sizeof(*area));
+            if (area->codec == SX_CODEC_LZMA2 || area->codec == SX_CODEC_LZMA2_MIPS)
+                lzma_blocks++;
+            else
+                raw_blocks++;
+        }
+    } else if (packed >= sizeof(sx_header_t)) {
         const sx_header_t *header = (const sx_header_t *)container;
         size_t offset = sizeof(*header);
         for (unsigned i = 0; i < header->block_count && offset + sizeof(sx_block_header_t) <= packed; i++) {
@@ -271,7 +330,8 @@ int main(void) {
          * FIFO needs data. SPU IRQ/DMA continues independently. */
         if (tx->phase == SX_TX_SENDING || tx->phase == SX_TX_PREPARING) {
             const sx_ofdm_tx_status_t *ofdm = sx_ofdm_tx_status();
-            if (ofdm->fifo_packets < ofdm->fifo_capacity) continue;
+            if (ofdm->generated_packets < ofdm->total_packets &&
+                ofdm->fifo_packets < ofdm->fifo_capacity) continue;
         }
         if (tx->phase == SX_TX_DONE) sx_ofdm_tx_play_fanfare();
         int transferring = tx->phase == SX_TX_PREPARING || tx->phase == SX_TX_SENDING;
@@ -317,7 +377,14 @@ int main(void) {
             if (boot_line >= 3) FntPrint(status_font, "1MB VRAM 512KB SPU RAM\n\n");
             if (boot_line >= 4) FntPrint(status_font, "BURST EDITION / WIRE V6\n");
             if (boot_line >= 9) {
+                unsigned packed_permille = packed ?
+                    (unsigned)(((uint64_t)packed * 1000u) / SX_BIOS_SIZE) : 0u;
                 FntPrint(status_font, "MODE: OFDM STEREO\n");
+                FntPrint(status_font, "SX V%u %u BYTES\n",
+                    container_mode == SX_CONTAINER_V2_LZMA2 ? 2u : 1u,
+                    (unsigned)packed);
+                FntPrint(status_font, "RATIO %u.%u%%\n",
+                    packed_permille / 10u, packed_permille % 10u);
                 FntPrint(status_font, "BLOCK SIZE: %u KiB\n", wire_block_kib);
                 FntPrint(status_font, "FEC: 16+6 / CONTINUOUS STREAM\n");
                 if ((VSync(-1) / 30) & 1)
@@ -339,10 +406,25 @@ int main(void) {
             if ((VSync(-1) / 6) & 1) FntPrint(status_font, "PRESS START BUTTON\n");
         } else {
             FntPrint(status_font, "BIOS %u BYTES\nCRC32 %08x\n", SX_TRANSFER_SIZE, crc);
-            FntPrint(status_font, "SX %u bytes / %u blocks\n", (unsigned)packed,
-                     (unsigned)((SX_TRANSFER_SIZE + SX_BLOCK_SIZE - 1) / SX_BLOCK_SIZE));
-            FntPrint(status_font, "CODEC DFL:%u LZS:%u RAW:%u %u%%\n", deflate_blocks, lzss_blocks, raw_blocks,
-                     packed ? (unsigned)((packed * 100u) / SX_BIOS_SIZE) : 0);
+            if (container_mode == SX_CONTAINER_V2_LZMA2) {
+                FntPrint(status_font, "SX V2 %u bytes / %u areas\n", (unsigned)packed,
+                         lzma_blocks + raw_blocks);
+                FntPrint(status_font, "CODEC LZMA2:%u RAW:%u %u%%\n", lzma_blocks, raw_blocks,
+                         packed ? (unsigned)((packed * 100u) / SX_BIOS_SIZE) : 0);
+                const sx_container_diagnostics_t *diagnostics = sx_container_diagnostics();
+                if (diagnostics->lzma_failures)
+                    FntPrint(status_font, "LZMA FAIL A%u E%u R%u RAW\n",
+                             diagnostics->lzma_last_area,
+                             (unsigned)diagnostics->lzma_last_error,
+                             (unsigned)diagnostics->lzma_last_request);
+                else if (diagnostics->lzma_raw_fallbacks)
+                    FntPrint(status_font, "LZMA OUTPUT NOT SMALLER\n");
+            } else {
+                FntPrint(status_font, "SX %u bytes / %u blocks\n", (unsigned)packed,
+                         (unsigned)((SX_TRANSFER_SIZE + SX_BLOCK_SIZE - 1) / SX_BLOCK_SIZE));
+                FntPrint(status_font, "CODEC DFL:%u LZS:%u RAW:%u %u%%\n", deflate_blocks, lzss_blocks, raw_blocks,
+                         packed ? (unsigned)((packed * 100u) / SX_BIOS_SIZE) : 0);
+            }
             FntPrint(status_font, "AUDIO [OFDM STEREO]\n");
             FntPrint(status_font, "BLOCK SIZE %u KiB / FEC 16+6\n", wire_block_kib);
             FntPrint(status_font, "CONTINUOUS OFDM / NO FSK\n");

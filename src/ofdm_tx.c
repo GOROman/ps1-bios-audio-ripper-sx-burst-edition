@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <psxapi.h>
 #include <psxetc.h>
@@ -30,17 +31,14 @@
 #define START_SIGNAL_SAMPLES (START_BEEP_SHORT_SAMPLES * 2u + START_BEEP_GAP_SAMPLES * 2u + START_BEEP_LONG_SAMPLES + START_BEEP_TAIL_SAMPLES)
 #define START_SIGNAL_BLOCKS ((START_SIGNAL_SAMPLES + SX_SPU_ADPCM_SAMPLES_PER_BLOCK - 1u) / SX_SPU_ADPCM_SAMPLES_PER_BLOCK)
 #define START_SIGNAL_BYTES (START_SIGNAL_BLOCKS * SX_SPU_ADPCM_BLOCK_BYTES)
-#define FANFARE_ADDR 0x7c000u
-#define FANFARE_SAMPLES 28672u /* 650 ms, exactly 1024 SPU ADPCM blocks */
-#define FANFARE_BLOCKS (FANFARE_SAMPLES / SX_SPU_ADPCM_SAMPLES_PER_BLOCK)
-#define FANFARE_BYTES (FANFARE_BLOCKS * SX_SPU_ADPCM_BLOCK_BYTES)
+#define FANFARE_ADDR 0x20000u
 
 static sx_ofdm_tx_status_t status;
 static const uint8_t *source;
 static size_t source_size, packet_count, next_packet;
 static uint32_t image_crc;
-static uint8_t fifo[FIFO_CAPACITY][MAX_CHUNK_BYTES] __attribute__((aligned(4)));
-static uint8_t precomputed[2][PRECOMPUTE_PACKETS * MAX_CHANNEL_BYTES] __attribute__((aligned(4)));
+static uint8_t (*fifo)[MAX_CHUNK_BYTES];
+static uint8_t (*precomputed)[PRECOMPUTE_PACKETS * MAX_CHANNEL_BYTES];
 static uint16_t fifo_packet[FIFO_CAPACITY];
 static volatile uint8_t fifo_head, fifo_tail, fifo_count;
 static volatile uint8_t db_active, dma_busy, stream_active, terminal_generated;
@@ -48,15 +46,42 @@ static volatile uint8_t playback_hold, callbacks_installed;
 static volatile int drain_vsync;
 static int refresh_rate, precompute_mode, precompute_start_vsync;
 static size_t packet_samples, playback_packet_samples, adpcm_blocks, channel_bytes, chunk_bytes;
-static uint8_t packet[SX_OFDM_PACKET_BYTES];
-static uint8_t start_signal_adpcm[START_SIGNAL_BYTES] __attribute__((aligned(4)));
+static uint8_t *packet;
+static uint8_t *start_signal_adpcm;
 static uint8_t start_signal_ready, start_signal_playing;
 static int start_signal_vsync;
-static uint8_t fanfare_adpcm[FANFARE_BYTES] __attribute__((aligned(4)));
+extern const uint8_t fanfare_adpcm[];
+extern const size_t fanfare_adpcm_size;
 static uint8_t fanfare_ready, fanfare_playing;
 static unsigned audio_mode;
-static int16_t pcm[2][SX_OFDM_MAX_PACKET_SAMPLES];
+static int16_t (*pcm)[SX_OFDM_MAX_PACKET_SAMPLES];
 static void *old_spu_callback, *old_dma_callback;
+
+static void release_work_buffers(void) {
+    free(fifo); fifo = NULL;
+    free(precomputed); precomputed = NULL;
+    free(packet); packet = NULL;
+    free(start_signal_adpcm); start_signal_adpcm = NULL;
+    free(pcm); pcm = NULL;
+    start_signal_ready = 0;
+}
+
+static int allocate_work_buffers(int use_precomputed) {
+    if (!packet) packet = malloc(SX_OFDM_PACKET_BYTES);
+    if (!pcm) pcm = malloc(sizeof(*pcm) * 2u);
+    if (!start_signal_adpcm) start_signal_adpcm = malloc(START_SIGNAL_BYTES);
+    if (use_precomputed) {
+        if (!precomputed) precomputed = malloc(sizeof(*precomputed) * 2u);
+    } else {
+        if (!fifo) fifo = malloc(sizeof(*fifo) * FIFO_CAPACITY);
+    }
+    if (!packet || !pcm || !start_signal_adpcm ||
+        (use_precomputed ? !precomputed : !fifo)) {
+        release_work_buffers();
+        return 0;
+    }
+    return 1;
+}
 
 static void stop_channels(void) {
     /* KeyOff follows the ADSR release and is not instant on every real SPU.
@@ -97,17 +122,6 @@ static int16_t start_signal_sample(unsigned sample) {
     return 0;
 }
 
-static int16_t fanfare_sample(unsigned sample) {
-    static const unsigned frequency[] = { 523u, 659u, 784u, 1047u, 1319u, 1568u, 2093u };
-    static const unsigned length[] = { 2205u, 2205u, 2205u, 2205u, 2205u, 2205u, 8820u };
-    for (unsigned note = 0; note < sizeof(frequency) / sizeof(frequency[0]); note++) {
-        if (sample < length[note])
-            return triangle_tone(sample, length[note], frequency[note]);
-        sample -= length[note];
-    }
-    return 0;
-}
-
 static void prepare_start_signal(void) {
     if (start_signal_ready) return;
     sx_spu_adpcm_state_t state;
@@ -125,21 +139,9 @@ static void prepare_start_signal(void) {
     start_signal_ready = 1;
 }
 
-static void prepare_fanfare(void) {
-    if (fanfare_ready) return;
-    sx_spu_adpcm_state_t state;
-    sx_spu_adpcm_reset(&state);
-    for (unsigned block = 0; block < FANFARE_BLOCKS; block++) {
-        int16_t samples[SX_SPU_ADPCM_SAMPLES_PER_BLOCK];
-        for (unsigned i = 0; i < SX_SPU_ADPCM_SAMPLES_PER_BLOCK; i++) {
-            unsigned at = block * SX_SPU_ADPCM_SAMPLES_PER_BLOCK + i;
-            samples[i] = at < FANFARE_SAMPLES ? fanfare_sample(at) : 0;
-        }
-        sx_spu_adpcm_encode_block_fast(&state, samples,
-            block + 1u == FANFARE_BLOCKS ? 1u : 0u,
-            fanfare_adpcm + block * SX_SPU_ADPCM_BLOCK_BYTES);
-    }
+static int prepare_fanfare(void) {
     fanfare_ready = 1;
+    return 1;
 }
 
 static void start_signal(void) {
@@ -162,11 +164,11 @@ static void start_signal(void) {
 
 void sx_ofdm_tx_play_fanfare(void) {
     if (fanfare_playing) return;
-    prepare_fanfare();
+    if (!prepare_fanfare()) return;
     stop_channels();
     SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
     SpuSetTransferStartAddr(FANFARE_ADDR);
-    SpuWrite((const uint32_t *)fanfare_adpcm, FANFARE_BYTES);
+    SpuWrite((const uint32_t *)fanfare_adpcm, fanfare_adpcm_size);
     SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
     SPU_CH_ADDR(2) = SPU_CH_ADDR(3) = getSPUAddr(FANFARE_ADDR);
     SPU_CH_FREQ(2) = SPU_CH_FREQ(3) = getSPUSampleRate(SX_SAMPLE_RATE);
@@ -300,7 +302,7 @@ static int generate_chunk(uint8_t slot) {
         next_packet++;
         status.generated_packets = (uint16_t)next_packet;
     } else {
-        memset(pcm, 0, sizeof(pcm));
+        memset(pcm, 0, sizeof(*pcm) * 2u);
         encode_channel(0, target, 1);
         encode_channel(1, target + channel_bytes, 1);
         fifo_packet[slot] = (uint16_t)packet_count;
@@ -354,6 +356,11 @@ int sx_ofdm_tx_begin(const uint8_t *data, size_t size) {
     playback_hold = 1;
     refresh_rate = GetVideoMode() == MODE_PAL ? 50 : 60;
     precompute_mode = packet_count <= PRECOMPUTE_PACKETS;
+    if (!allocate_work_buffers(precompute_mode)) {
+        status.phase = SX_OFDM_TX_ERROR;
+        status.error = -3;
+        return -1;
+    }
     status.phase = SX_OFDM_TX_BUFFERING;
     status.total_packets = (uint16_t)packet_count;
     status.fifo_capacity = (uint8_t)(precompute_mode ? packet_count : FIFO_CAPACITY);

@@ -16,6 +16,13 @@ int main(void) {
     assert(sx_extract_container(packed, packed_size, output, SX_BIOS_SIZE) == SX_BIOS_SIZE);
     assert(!memcmp(input, output, SX_BIOS_SIZE));
 
+    memset(packed, 0, CAP);
+    size_t v2_size = sx_build_container_progress_mode(input, SX_BIOS_SIZE, packed, CAP,
+                                                      NULL, NULL, SX_CONTAINER_V2_LZMA2);
+    assert(v2_size > sizeof(sx_v2_header_t));
+    assert(sx_extract_container(packed, v2_size, output, SX_BIOS_SIZE) == SX_BIOS_SIZE);
+    assert(!memcmp(input, output, SX_BIOS_SIZE));
+
     uint8_t deflated[SX_BLOCK_SIZE + SX_BLOCK_SIZE / 8u + 16u];
     size_t deflated_size = sx_deflate_fixed_encode(input, SX_BLOCK_SIZE, deflated, sizeof(deflated));
     assert(deflated_size > 0);
@@ -24,7 +31,8 @@ int main(void) {
     assert(!memcmp(input, output, SX_BLOCK_SIZE));
     packed[packed_size - 1] ^= 1;
     assert(sx_extract_container(packed, packed_size, output, SX_BIOS_SIZE) == 0);
-    printf("PASS raw=%u packed=%u fixed=%u crc32=%08x\n", SX_BIOS_SIZE, (unsigned)packed_size,
+    printf("PASS raw=%u packed=%u v2=%u fixed=%u crc32=%08x\n", SX_BIOS_SIZE,
+           (unsigned)packed_size, (unsigned)v2_size,
            (unsigned)deflated_size,
            sx_crc32(input, SX_BIOS_SIZE, 0));
     free(output); free(packed); free(input);

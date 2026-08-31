@@ -1,6 +1,8 @@
 .PHONY: test calibration serve analyze-ofdm codec-sweep codec-sweep-test v2-lzma-test v2-lzma-encode
+LZMA2_CFLAGS = -DZ7_ST -DSX_LZMA_LOW_MEMORY -DSX_LZMA2_DICT_LOG2=16 -Isrc/lzma
+LZMA2_SOURCES = src/lzma2_encode.c src/lzma2_decode.c src/lzma/CpuArch.c src/lzma/Lzma2Enc.c src/lzma/LzmaEnc.c src/lzma/LzFind.c src/lzma/Lzma2Dec.c src/lzma/LzmaDec.c
 test:
-	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude tests/codec_test.c src/crc32.c src/lzss.c src/deflate_fixed.c src/container.c -o /tmp/ps1sx-codec-test
+	$(CC) -std=c11 -Wall -Wextra -Werror $(LZMA2_CFLAGS) -Iinclude tests/codec_test.c src/crc32.c src/lzss.c src/deflate_fixed.c src/container.c $(LZMA2_SOURCES) -o /tmp/ps1sx-codec-test
 	/tmp/ps1sx-codec-test
 	$(CC) -std=c11 -Wall -Wextra -Werror -Iinclude tests/ofdm_packet_test.c src/crc32.c src/inner_fec.c src/ofdm_packet.c -o /tmp/ps1sx-ofdm-packet-test
 	/tmp/ps1sx-ofdm-packet-test
@@ -11,8 +13,11 @@ test:
 	node tests/ofdm_worker_test.js
 	node tests/ofdm_rs_test.js
 	node tests/browser_codec_test.js
+	$(CC) -std=c11 -Wall -Wextra -Werror $(LZMA2_CFLAGS) -Iinclude tests/lzma2_fixture.c src/crc32.c src/lzss.c src/deflate_fixed.c src/container.c $(LZMA2_SOURCES) -o /tmp/ps1sx-lzma2-fixture
+	/tmp/ps1sx-lzma2-fixture
+	node tests/lzma2_wasm_test.js
 	python3 tools/codec_sweep.py --self-test
-	$(CC) -std=c11 -Wall -Wextra -Werror -DSX_HOST_TEST -Iinclude tests/ofdm_loopback_gen.c src/crc32.c src/lzss.c src/deflate_fixed.c src/container.c src/ofdm_packet.c src/inner_fec.c src/ofdm_mod.c src/spu_adpcm.c -lm -o /tmp/ps1sx-loopback-gen
+	$(CC) -std=c11 -Wall -Wextra -Werror -DSX_HOST_TEST $(LZMA2_CFLAGS) -Iinclude tests/ofdm_loopback_gen.c src/crc32.c src/lzss.c src/deflate_fixed.c src/container.c $(LZMA2_SOURCES) src/ofdm_packet.c src/inner_fec.c src/ofdm_mod.c src/spu_adpcm.c -lm -o /tmp/ps1sx-loopback-gen
 	node tests/ofdm_loopback_test.js
 	$(CC) -std=c11 -Wall -Wextra -Werror tests/ofdm_demod_test.c -lm -o /tmp/ps1sx-ofdm-demod-test
 	/tmp/ps1sx-ofdm-demod-test
