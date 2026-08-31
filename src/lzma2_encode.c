@@ -3,6 +3,31 @@
 #include "sx_format.h"
 #include "lzma/Lzma2Enc.h"
 
+#ifndef SX_LZMA_LEVEL
+#define SX_LZMA_LEVEL 3
+#endif
+#ifndef SX_LZMA_FB
+#define SX_LZMA_FB 32
+#endif
+#ifndef SX_LZMA_HASH_BITS
+#define SX_LZMA_HASH_BITS 16
+#endif
+#ifndef SX_LZMA_MC
+#define SX_LZMA_MC 16
+#endif
+#ifndef SX_LZMA_ALGO
+#define SX_LZMA_ALGO 0
+#endif
+#ifndef SX_LZMA_BT_MODE
+#define SX_LZMA_BT_MODE 1
+#endif
+#ifndef SX_LZMA_HASH_BYTES
+#define SX_LZMA_HASH_BYTES 2
+#endif
+#ifndef SX_LZMA2_BLOCK_SIZE
+#define SX_LZMA2_BLOCK_SIZE LZMA2_ENC_PROPS_BLOCK_SIZE_SOLID
+#endif
+
 typedef struct {
     ISzAlloc vt;
 #ifdef SX_LZMA_TAIL_ARENA
@@ -13,6 +38,16 @@ typedef struct {
 
 static int sx_lzma_error;
 static size_t sx_lzma_request;
+static sx_lzma_progress_fn sx_lzma_internal_callback;
+static void *sx_lzma_internal_user;
+static size_t sx_lzma_internal_total;
+
+void sx_lzma_internal_progress(UInt64 completed) {
+    if (!sx_lzma_internal_callback) return;
+    size_t value = completed > (UInt64)sx_lzma_internal_total ? sx_lzma_internal_total :
+                   (size_t)completed;
+    sx_lzma_internal_callback(value, sx_lzma_internal_total, sx_lzma_internal_user);
+}
 
 static void *sx_lzma_alloc(ISzAllocPtr allocator, size_t size) {
     if (size > sx_lzma_request) sx_lzma_request = size;
@@ -84,6 +119,9 @@ size_t sx_lzma2_encode(const uint8_t *src, size_t size, uint8_t *dst, size_t cap
         sx_lzma_error = SZ_ERROR_PARAM;
         return 0;
     }
+    sx_lzma_internal_callback = progress;
+    sx_lzma_internal_user = user;
+    sx_lzma_internal_total = size;
 
     sx_lzma_allocator_t allocator = {
         .vt = {sx_lzma_alloc, sx_lzma_free}
@@ -102,14 +140,14 @@ size_t sx_lzma2_encode(const uint8_t *src, size_t size, uint8_t *dst, size_t cap
 
     CLzma2EncProps props;
     Lzma2EncProps_Init(&props);
-    props.blockSize = LZMA2_ENC_PROPS_BLOCK_SIZE_SOLID;
+    props.blockSize = SX_LZMA2_BLOCK_SIZE;
     /* The PS1 build opts into a small match finder.  A 256 KiB dictionary
      * plus the normal binary-tree hash tables cannot coexist with the
      * resident container and modem buffers in 2 MiB of main RAM.  The
      * stream remains standard LZMA2; only the encoder search profile changes.
      */
 #ifdef SX_LZMA_LOW_MEMORY
-    props.lzmaProps.level = 3;
+    props.lzmaProps.level = SX_LZMA_LEVEL;
 #else
     props.lzmaProps.level = 9;
 #endif
@@ -125,11 +163,12 @@ size_t sx_lzma2_encode(const uint8_t *src, size_t size, uint8_t *dst, size_t cap
     props.lzmaProps.numThreads = 1;
     props.lzmaProps.writeEndMark = 0;
 #ifdef SX_LZMA_LOW_MEMORY
-    props.lzmaProps.algo = 0;
-    props.lzmaProps.fb = 32;
-    props.lzmaProps.numHashBytes = 2;
-    props.lzmaProps.numHashOutBits = 16;
-    props.lzmaProps.mc = 16;
+    props.lzmaProps.algo = SX_LZMA_ALGO;
+    props.lzmaProps.fb = SX_LZMA_FB;
+    props.lzmaProps.btMode = SX_LZMA_BT_MODE;
+    props.lzmaProps.numHashBytes = SX_LZMA_HASH_BYTES;
+    props.lzmaProps.numHashOutBits = SX_LZMA_HASH_BITS;
+    props.lzmaProps.mc = SX_LZMA_MC;
 #endif
 
     SRes result = Lzma2Enc_SetProps(encoder, &props);
@@ -146,11 +185,13 @@ size_t sx_lzma2_encode(const uint8_t *src, size_t size, uint8_t *dst, size_t cap
                                   progress ? &progress_state.vt : NULL);
         if (result == SZ_OK) {
             Lzma2Enc_Destroy(encoder);
+            sx_lzma_internal_callback = NULL;
             return output_size;
         }
     }
     sx_lzma_error = result;
     Lzma2Enc_Destroy(encoder);
+    sx_lzma_internal_callback = NULL;
     return 0;
 }
 

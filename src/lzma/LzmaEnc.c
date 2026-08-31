@@ -2388,6 +2388,10 @@ Z7_NO_INLINE
 static SRes LzmaEnc_CodeOneBlock(CLzmaEnc *p, UInt32 maxPackSize, UInt32 maxUnpackSize)
 {
   UInt32 nowPos32, startPos32;
+#ifdef SX_LZMA_INTERNAL_PROGRESS
+  UInt32 nextProgress = (UInt32)1 << 14;
+  extern void sx_lzma_internal_progress(UInt64 completed);
+#endif
   if (p->needInit)
   {
     #ifndef Z7_ST
@@ -2665,6 +2669,13 @@ static SRes LzmaEnc_CodeOneBlock(CLzmaEnc *p, UInt32 maxPackSize, UInt32 maxUnpa
       if (p->matchFinder.GetNumAvailableBytes(p->matchFinderObj) == 0)
         break;
       processed = nowPos32 - startPos32;
+#ifdef SX_LZMA_INTERNAL_PROGRESS
+      if (processed >= nextProgress)
+      {
+        sx_lzma_internal_progress(p->nowPos64 + processed);
+        do nextProgress += (UInt32)1 << 14; while (processed >= nextProgress);
+      }
+#endif
       
       if (maxPackSize)
       {

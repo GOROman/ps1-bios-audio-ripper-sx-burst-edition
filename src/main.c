@@ -16,7 +16,11 @@
 
 #define SCREEN_W 320
 #define SCREEN_H 240
+#ifdef SX_DEFAULT_CONTAINER_V2
+#define CONTAINER_CAP (256u * 1024u)
+#else
 #define CONTAINER_CAP (SX_BIOS_SIZE + 65536u)
+#endif
 #ifndef SX_TRANSFER_SIZE
 #define SX_TRANSFER_SIZE SX_BIOS_SIZE /* full 512 KiB BIOS transfer */
 #endif

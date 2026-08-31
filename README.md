@@ -40,7 +40,7 @@ Mac Studioの24物理コアで複数codecを比較した結果、BIOSを次の2�
 - `make v2-lzma-test` でMac Studioホスト基準の圧縮・復元・CRC回帰テストを実行できる
 - `make v2-lzma-encode ARGS='--input BIOS --output CONTAINER'` でMacホスト上の候補コンテナを生成できる
 
-実BIOSでのホスト基準値は **197,887 bytes**（524,288 bytesから326,401 bytes削減、62.26%削減）だった。これは200,000 bytes目標を2,113 bytes下回る。V2は既定のV1送信経路を変更せず、`-DSX_CONTAINER_VERSION=2` を指定したPS1ビルドで選択できる。PS1側は2 MiB RAMと常駐モデムバッファを考慮した低メモリLZMA2プロファイル（辞書64 KiB、標準LZMA2属性）を使い、正常に圧縮できても小さくならない領域だけRAWへフォールバックする。LZMA2実行エラーは `ERROR` を表示して処理を停止する。V2の復号は `web/lzma2-decoder.wasm` で行い、領域CRCと全体CRCが一致した場合だけBIOS保存を許可する。
+実BIOSでの強いホスト基準値は **197,887 bytes** だった。PS1と同じ低メモリ7-Zip SDK経路は、辞書64 KiB、ハッシュチェーン、`fb=192 / mc=128`、MIPS領域 `lc=0 / lp=2 / pb=2`、リソース領域 `lc=0 / lp=1 / pb=4` で **199,751 bytes**（524,288 bytesから324,537 bytes削減、61.90%削減）を復元一致付きで確認した。DuckStation上のPS1ビルドでも200,000 bytes未満の完了表示を確認している。V2は既定のV1送信経路を変更せず、`-DSX_CONTAINER_VERSION=2` を指定したPS1ビルドで選択できる。LZMA2実行エラーは `ERROR` を表示して処理を停止する。V2の復号は `web/lzma2-decoder.wasm` で行い、領域CRCと全体CRCが一致した場合だけBIOS保存を許可する。
 
 ホストの197,887 bytesはMac Studioのliblzma基準値であり、PS1低メモリプロファイルの実BIOSサイズとは別の測定値である。PS1のV2画面には圧縮時間、サイズ、圧縮率、削減量、およびLZMA2失敗時の領域番号・エラーコード・RAWフォールバックを表示する。ホストテスト、生成PCMループバック、DuckStation実行、実機PlayStationからの音声復元は別々の検証層として扱う。実機音声復元は引き続き `PENDING` である。
 

@@ -14,7 +14,12 @@ psn00bsdk_add_executable(ps1sx GPREL
     src/audio_tx.c src/ofdm_packet.c src/inner_fec.c src/ofdm_mod.c src/ofdm_tx.c src/spu_adpcm.c
 )
 target_include_directories(ps1sx PRIVATE include src src/lzma)
-target_compile_definitions(ps1sx PRIVATE Z7_ST SX_LZMA_NO_ERRNO SX_LZMA_LOW_MEMORY SX_LZMA_TAIL_ARENA SX_LZMA2_DICT_LOG2=16)
+target_compile_definitions(ps1sx PRIVATE
+    Z7_ST SX_LZMA_NO_ERRNO SX_LZMA_LOW_MEMORY SX_LZMA_TAIL_ARENA
+    SX_LZMA2_DICT_LOG2=16 SX_LZMA_ALGO=1 SX_LZMA_BT_MODE=0
+    SX_LZMA_HASH_BYTES=3 SX_LZMA_HASH_BITS=16 SX_LZMA_FB=192 SX_LZMA_MC=128
+    SX_LZMA_INTERNAL_PROGRESS
+)
 if(SX_TEST_AUTOSTART)
     target_compile_definitions(ps1sx PRIVATE SX_TEST_AUTOSTART)
 endif()

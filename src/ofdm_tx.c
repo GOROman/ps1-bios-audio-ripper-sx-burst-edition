@@ -39,6 +39,8 @@ static size_t source_size, packet_count, next_packet;
 static uint32_t image_crc;
 static uint8_t (*fifo)[MAX_CHUNK_BYTES];
 static uint8_t (*precomputed)[PRECOMPUTE_PACKETS * MAX_CHANNEL_BYTES];
+static uint8_t *parity_packets;
+static size_t parity_first_packet;
 static uint16_t fifo_packet[FIFO_CAPACITY];
 static volatile uint8_t fifo_head, fifo_tail, fifo_count;
 static volatile uint8_t db_active, dma_busy, stream_active, terminal_generated;
@@ -60,13 +62,14 @@ static void *old_spu_callback, *old_dma_callback;
 static void release_work_buffers(void) {
     free(fifo); fifo = NULL;
     free(precomputed); precomputed = NULL;
+    free(parity_packets); parity_packets = NULL;
     free(packet); packet = NULL;
     free(start_signal_adpcm); start_signal_adpcm = NULL;
     free(pcm); pcm = NULL;
     start_signal_ready = 0;
 }
 
-static int allocate_work_buffers(int use_precomputed) {
+static int allocate_work_buffers(int use_precomputed, size_t total_packets) {
     if (!packet) packet = malloc(SX_OFDM_PACKET_BYTES);
     if (!pcm) pcm = malloc(sizeof(*pcm) * 2u);
     if (!start_signal_adpcm) start_signal_adpcm = malloc(START_SIGNAL_BYTES);
@@ -74,13 +77,25 @@ static int allocate_work_buffers(int use_precomputed) {
         if (!precomputed) precomputed = malloc(sizeof(*precomputed) * 2u);
     } else {
         if (!fifo) fifo = malloc(sizeof(*fifo) * FIFO_CAPACITY);
+        parity_first_packet = total_packets * SX_OFDM_DATA_SHARDS / SX_OFDM_TOTAL_SHARDS;
+        size_t parity_count = total_packets - parity_first_packet;
+        if (!parity_packets) parity_packets = malloc(parity_count * SX_OFDM_PACKET_BYTES);
     }
     if (!packet || !pcm || !start_signal_adpcm ||
-        (use_precomputed ? !precomputed : !fifo)) {
+        (use_precomputed ? !precomputed : (!fifo || !parity_packets))) {
         release_work_buffers();
         return 0;
     }
     return 1;
+}
+
+static int make_tx_packet(size_t index, uint8_t *out) {
+    if (parity_packets && index >= parity_first_packet) {
+        memcpy(out, parity_packets + (index - parity_first_packet) * SX_OFDM_PACKET_BYTES,
+               SX_OFDM_PACKET_BYTES);
+        return 1;
+    }
+    return sx_ofdm_make_packet(source, source_size, image_crc, index, out);
 }
 
 static void stop_channels(void) {
@@ -235,7 +250,7 @@ void sx_ofdm_tx_set_audio_mode(unsigned mode) { (void)mode; audio_mode = 0u; }
 
 static int generate_precomputed(void) {
     int stage = VSync(-1);
-    if (!sx_ofdm_make_packet(source, source_size, image_crc, next_packet, packet)) return 0;
+    if (!make_tx_packet(next_packet, packet)) return 0;
     int now = VSync(-1); status.packet_frames = (uint8_t)(now - stage); stage = now;
     if (audio_mode == 2u) sx_ofdm_modulate_packet_mono(packet, (uint32_t)next_packet, pcm[0], pcm[1]);
     else sx_ofdm_modulate_packet(packet, (uint32_t)next_packet, pcm[0], pcm[1]);
@@ -285,7 +300,7 @@ static int generate_chunk(uint8_t slot) {
     uint8_t *target = fifo[slot];
     if (next_packet < packet_count) {
         int stage = VSync(-1);
-        if (!sx_ofdm_make_packet(source, source_size, image_crc, next_packet, packet)) return 0;
+        if (!make_tx_packet(next_packet, packet)) return 0;
         int now = VSync(-1);
         status.packet_frames = (uint8_t)(now - stage);
         stage = now;
@@ -356,10 +371,21 @@ int sx_ofdm_tx_begin(const uint8_t *data, size_t size) {
     playback_hold = 1;
     refresh_rate = GetVideoMode() == MODE_PAL ? 50 : 60;
     precompute_mode = packet_count <= PRECOMPUTE_PACKETS;
-    if (!allocate_work_buffers(precompute_mode)) {
+    if (!allocate_work_buffers(precompute_mode, packet_count)) {
         status.phase = SX_OFDM_TX_ERROR;
         status.error = -3;
         return -1;
+    }
+    if (!precompute_mode) {
+        for (size_t index = parity_first_packet; index < packet_count; index++) {
+            uint8_t *cached = parity_packets +
+                (index - parity_first_packet) * SX_OFDM_PACKET_BYTES;
+            if (!sx_ofdm_make_packet(source, source_size, image_crc, index, cached)) {
+                status.phase = SX_OFDM_TX_ERROR;
+                status.error = -1;
+                return -1;
+            }
+        }
     }
     status.phase = SX_OFDM_TX_BUFFERING;
     status.total_packets = (uint16_t)packet_count;

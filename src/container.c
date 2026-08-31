@@ -46,9 +46,9 @@ static size_t sx_build_container_v2_progress(const uint8_t *src, size_t size, ui
     const uint32_t sizes[2] = {split, SX_BIOS_SIZE - split};
     const uint8_t codecs[2] = {SX_CODEC_LZMA2_MIPS, SX_CODEC_LZMA2};
     const uint8_t flags[2] = {SX_V2_AREA_FLAG_MIPS_ALIGNED, 0u};
-    const uint8_t lc[2] = {2u, 3u};
-    const uint8_t lp[2] = {2u, 0u};
-    const uint8_t pb[2] = {2u, 2u};
+    const uint8_t lc[2] = {0u, 0u};
+    const uint8_t lp[2] = {2u, 1u};
+    const uint8_t pb[2] = {2u, 4u};
     const uint8_t dict_log2 = SX_LZMA2_DICT_LOG2;
     sx_v2_area_header_t areas[2];
     const size_t table_size = 2u * sizeof(sx_v2_area_header_t);

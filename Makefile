@@ -1,5 +1,8 @@
 .PHONY: test calibration serve analyze-ofdm codec-sweep codec-sweep-test v2-lzma-test v2-lzma-encode
-LZMA2_CFLAGS = -DZ7_ST -DSX_LZMA_LOW_MEMORY -DSX_LZMA2_DICT_LOG2=16 -Isrc/lzma
+LZMA2_CFLAGS = -DZ7_ST -DSX_LZMA_LOW_MEMORY -DSX_LZMA2_DICT_LOG2=16 \
+	-DSX_LZMA_ALGO=1 -DSX_LZMA_BT_MODE=0 -DSX_LZMA_HASH_BYTES=3 \
+	-DSX_LZMA_HASH_BITS=16 -DSX_LZMA_FB=192 -DSX_LZMA_MC=128 \
+	-DSX_LZMA_INTERNAL_PROGRESS -Isrc/lzma
 LZMA2_SOURCES = src/lzma2_encode.c src/lzma2_decode.c src/lzma/CpuArch.c src/lzma/Lzma2Enc.c src/lzma/LzmaEnc.c src/lzma/LzFind.c src/lzma/Lzma2Dec.c src/lzma/LzmaDec.c
 test:
 	$(CC) -std=c11 -Wall -Wextra -Werror $(LZMA2_CFLAGS) -Iinclude tests/codec_test.c src/crc32.c src/lzss.c src/deflate_fixed.c src/container.c $(LZMA2_SOURCES) -o /tmp/ps1sx-codec-test
