@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <psxapi.h>
 #include <psxetc.h>
 #include <psxgpu.h>
@@ -17,7 +18,7 @@
 #define SCREEN_W 320
 #define SCREEN_H 240
 #ifdef SX_DEFAULT_CONTAINER_V2
-#define CONTAINER_CAP (256u * 1024u)
+#define CONTAINER_CAP (SX_BIOS_SIZE + 65536u)
 #else
 #define CONTAINER_CAP (SX_BIOS_SIZE + 65536u)
 #endif
@@ -43,8 +44,35 @@ static SPRT marker_sprite;
 static DR_TPAGE marker_tpage;
 static int status_font;
 static int compression_percent_font;
+static int start_prompt_font;
 static uint32_t compression_start_frame;
 extern const uint8_t marker_tim[];
+extern void *sbrk(int increment);
+
+static unsigned startup_free_memory(void) {
+    uintptr_t stack;
+    __asm__ volatile("move %0, $sp" : "=r"(stack));
+    uintptr_t heap = (uintptr_t)sbrk(0);
+    return stack > heap ? (unsigned)(stack - heap) : 0u;
+}
+
+static void read_bios_version(const uint8_t *bios, char *out, size_t capacity) {
+    static const char prefix[] = "System ROM Version";
+    if (!out || capacity == 0u) return;
+    out[0] = '\0';
+    for (size_t offset = 0; offset + sizeof(prefix) < SX_BIOS_SIZE; offset++) {
+        if (memcmp(bios + offset, prefix, sizeof(prefix) - 1u) != 0) continue;
+        size_t length = 0;
+        while (offset + length < SX_BIOS_SIZE && length + 1u < capacity) {
+            uint8_t value = bios[offset + length];
+            if (value < 0x20u || value > 0x7eu) break;
+            out[length++] = (char)value;
+        }
+        out[length] = '\0';
+        return;
+    }
+    snprintf(out, capacity, "System ROM Version UNKNOWN");
+}
 
 static void init_marker_sprite(void) {
     TIM_IMAGE tim;
@@ -98,6 +126,7 @@ static void init(void) {
     FntLoad(960, 0);
     status_font = FntOpen(18, 25, 284, 180, 0, 512);
     compression_percent_font = FntOpen(256, 211, 64, 16, 0, 64);
+    start_prompt_font = FntOpen(18, 190, 284, 18, 0, 64);
     SpuInit();
     init_marker_sprite();
     InitPAD(pad_data[0], 34, pad_data[1], 34); StartPAD(); ChangeClearPAD(0);
@@ -119,7 +148,7 @@ static void compression_progress(uint16_t completed, uint16_t total, size_t stor
         elapsed_ms / 60000u, (elapsed_ms / 1000u) % 60u, elapsed_ms % 1000u);
     FntPrint(status_font, "STORED %u BYTES\n", (unsigned)stored);
     FntPrint(compression_percent_font, "%3u.%u%%", permille / 10u, permille % 10u);
-    FntFlush(status_font); FntFlush(compression_percent_font);
+    FntFlush(status_font); FntFlush(compression_percent_font); FntFlush(start_prompt_font);
     DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
 }
 
@@ -162,7 +191,7 @@ static void compression_done(size_t packed, unsigned elapsed_ms,
     else if (diagnostics && diagnostics->lzma_raw_fallbacks)
         FntPrint(status_font, "LZMA NOT SMALLER -> RAW\n");
     FntPrint(compression_percent_font, "100.0%%");
-    FntFlush(status_font); FntFlush(compression_percent_font);
+    FntFlush(status_font); FntFlush(compression_percent_font); FntFlush(start_prompt_font);
     DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
     for (unsigned frame = 0; frame < 60u; frame++) VSync(0);
 }
@@ -236,13 +265,17 @@ int main(void) {
     }
 #endif
     const uint8_t *bios = (const uint8_t *)SX_BIOS_ADDR;
+    char bios_version[64];
+    read_bios_version(bios, bios_version, sizeof(bios_version));
     draw_ui(startup_page, 128, 0, 0, 1);
     FntPrint(status_font, "PS1 BIOS AUDIO RIPPER SX\n");
     FntPrint(status_font, "VERSION %s / WIRE V%u\n", SX_APP_VERSION, SX_WIRE_VERSION);
+    FntPrint(status_font, "%s\n", bios_version);
+    FntPrint(status_font, "FREE %u BYTES\n", startup_free_memory());
     FntPrint(status_font, "BUILD %s %s\n\n", __DATE__, __TIME__);
     FntPrint(status_font, "%s PREPARING...\n",
         container_mode == SX_CONTAINER_V2_LZMA2 ? "V2 LZMA2" : "MIXED CODEC");
-    FntFlush(status_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
+    FntFlush(status_font); FntFlush(start_prompt_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
     uint32_t crc = sx_crc32(bios, SX_BIOS_SIZE, 0);
     compression_start_frame = (uint32_t)VSync(-1);
     size_t packed = sx_build_container_progress_mode(bios, SX_TRANSFER_SIZE, container, sizeof(container),
@@ -375,6 +408,7 @@ int main(void) {
             if (boot_line >= 1) {
                 FntPrint(status_font, "PS1 BIOS RIPPER SX\n");
                 FntPrint(status_font, "VERSION %s / WIRE V%u\n", SX_APP_VERSION, SX_WIRE_VERSION);
+                FntPrint(status_font, "%s\n", bios_version);
                 FntPrint(status_font, "BUILD %s %s\n", __DATE__, __TIME__);
             }
             if (boot_line >= 2) FntPrint(status_font, "2MB RAM SYSTEM\n");
@@ -391,9 +425,9 @@ int main(void) {
                     packed_permille / 10u, packed_permille % 10u);
                 FntPrint(status_font, "BLOCK SIZE: %u KiB\n", wire_block_kib);
                 FntPrint(status_font, "FEC: 16+6 / CONTINUOUS STREAM\n");
-                if ((VSync(-1) / 30) & 1)
-                    FntPrint(status_font, "PRESS START BUTTON\n");
             }
+            if (boot_line >= 9 && ((VSync(-1) / 30) & 1))
+                FntPrint(start_prompt_font, "PRESS START BUTTON");
             goto render_frame;
         }
         FntPrint(status_font, "PS1 BIOS RIPPER SX // BURST\nRACE CONTROL / WIRE V6\n----------------------------\n");
@@ -406,9 +440,7 @@ int main(void) {
             if (transferring)
                 FntPrint(status_font, "REMAINING %u BYTES\n", transfer_remaining);
         }
-        if (!command_issued) {
-            if ((VSync(-1) / 6) & 1) FntPrint(status_font, "PRESS START BUTTON\n");
-        } else {
+        if (command_issued) {
             FntPrint(status_font, "BIOS %u BYTES\nCRC32 %08x\n", SX_TRANSFER_SIZE, crc);
             if (container_mode == SX_CONTAINER_V2_LZMA2) {
                 FntPrint(status_font, "SX V2 %u bytes / %u areas\n", (unsigned)packed,
@@ -467,7 +499,7 @@ render_frame:
             DrawPrim((const uint32_t *)&marker_tpage);
             DrawPrim((const uint32_t *)&marker_sprite);
         }
-        FntFlush(status_font); FntFlush(compression_percent_font);
+        FntFlush(status_font); FntFlush(compression_percent_font); FntFlush(start_prompt_font);
         DrawSync(0); VSync(0); PutDispEnv(&disp[page]); page ^= 1;
     }
 }
