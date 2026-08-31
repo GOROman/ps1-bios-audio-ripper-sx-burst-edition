@@ -15,9 +15,17 @@ int main(void) {
     assert(packed_size > sizeof(sx_header_t));
     assert(sx_extract_container(packed, packed_size, output, SX_BIOS_SIZE) == SX_BIOS_SIZE);
     assert(!memcmp(input, output, SX_BIOS_SIZE));
+
+    uint8_t deflated[SX_BLOCK_SIZE + SX_BLOCK_SIZE / 8u + 16u];
+    size_t deflated_size = sx_deflate_fixed_encode(input, SX_BLOCK_SIZE, deflated, sizeof(deflated));
+    assert(deflated_size > 0);
+    memset(output, 0, SX_BLOCK_SIZE);
+    assert(sx_deflate_fixed_decode(deflated, deflated_size, output, SX_BLOCK_SIZE) == SX_BLOCK_SIZE);
+    assert(!memcmp(input, output, SX_BLOCK_SIZE));
     packed[packed_size - 1] ^= 1;
     assert(sx_extract_container(packed, packed_size, output, SX_BIOS_SIZE) == 0);
-    printf("PASS raw=%u packed=%u crc32=%08x\n", SX_BIOS_SIZE, (unsigned)packed_size,
+    printf("PASS raw=%u packed=%u fixed=%u crc32=%08x\n", SX_BIOS_SIZE, (unsigned)packed_size,
+           (unsigned)deflated_size,
            sx_crc32(input, SX_BIOS_SIZE, 0));
     free(output); free(packed); free(input);
     return 0;

@@ -13,9 +13,8 @@
 #include "spu_adpcm.h"
 #include "sx_format.h"
 
-/* Keep OFDM in a dedicated SPU RAM region.  FSK uses 0x1010, and reusing
- * that address can make a real SPU replay stale FSK ADPCM on the left voice
- * if the following DMA/start-address update has not settled yet. */
+/* Keep OFDM in a dedicated SPU RAM region so a previous modem voice cannot
+ * leak into the left channel while the following DMA update settles. */
 #define SPU_BUFFER_ADDR 0x20000u
 #define MAX_ADPCM_BLOCKS ((SX_OFDM_MAX_PACKET_SAMPLES + SX_SPU_ADPCM_SAMPLES_PER_BLOCK - 1u) / SX_SPU_ADPCM_SAMPLES_PER_BLOCK)
 #define MAX_CHANNEL_BYTES (MAX_ADPCM_BLOCKS * SX_SPU_ADPCM_BLOCK_BYTES)
@@ -31,6 +30,10 @@
 #define START_SIGNAL_SAMPLES (START_BEEP_SHORT_SAMPLES * 2u + START_BEEP_GAP_SAMPLES * 2u + START_BEEP_LONG_SAMPLES + START_BEEP_TAIL_SAMPLES)
 #define START_SIGNAL_BLOCKS ((START_SIGNAL_SAMPLES + SX_SPU_ADPCM_SAMPLES_PER_BLOCK - 1u) / SX_SPU_ADPCM_SAMPLES_PER_BLOCK)
 #define START_SIGNAL_BYTES (START_SIGNAL_BLOCKS * SX_SPU_ADPCM_BLOCK_BYTES)
+#define FANFARE_ADDR 0x7c000u
+#define FANFARE_SAMPLES 28672u /* 650 ms, exactly 1024 SPU ADPCM blocks */
+#define FANFARE_BLOCKS (FANFARE_SAMPLES / SX_SPU_ADPCM_SAMPLES_PER_BLOCK)
+#define FANFARE_BYTES (FANFARE_BLOCKS * SX_SPU_ADPCM_BLOCK_BYTES)
 
 static sx_ofdm_tx_status_t status;
 static const uint8_t *source;
@@ -49,14 +52,15 @@ static uint8_t packet[SX_OFDM_PACKET_BYTES];
 static uint8_t start_signal_adpcm[START_SIGNAL_BYTES] __attribute__((aligned(4)));
 static uint8_t start_signal_ready, start_signal_playing;
 static int start_signal_vsync;
+static uint8_t fanfare_adpcm[FANFARE_BYTES] __attribute__((aligned(4)));
+static uint8_t fanfare_ready, fanfare_playing;
 static unsigned audio_mode;
 static int16_t pcm[2][SX_OFDM_MAX_PACKET_SAMPLES];
 static void *old_spu_callback, *old_dma_callback;
 
 static void stop_channels(void) {
     /* KeyOff follows the ADSR release and is not instant on every real SPU.
-     * Zero all modem voice volumes first so a previous FSK voice cannot leak
-     * into the next OFDM stream. */
+     * Zero all modem voice volumes before starting the next OFDM stream. */
     SPU_CH_VOL_L(0) = SPU_CH_VOL_R(0) = 0;
     SPU_CH_VOL_L(1) = SPU_CH_VOL_R(1) = 0;
     SPU_CH_VOL_L(2) = SPU_CH_VOL_R(2) = 0;
@@ -93,6 +97,17 @@ static int16_t start_signal_sample(unsigned sample) {
     return 0;
 }
 
+static int16_t fanfare_sample(unsigned sample) {
+    static const unsigned frequency[] = { 523u, 659u, 784u, 1047u, 1319u, 1568u, 2093u };
+    static const unsigned length[] = { 2205u, 2205u, 2205u, 2205u, 2205u, 2205u, 8820u };
+    for (unsigned note = 0; note < sizeof(frequency) / sizeof(frequency[0]); note++) {
+        if (sample < length[note])
+            return triangle_tone(sample, length[note], frequency[note]);
+        sample -= length[note];
+    }
+    return 0;
+}
+
 static void prepare_start_signal(void) {
     if (start_signal_ready) return;
     sx_spu_adpcm_state_t state;
@@ -108,6 +123,23 @@ static void prepare_start_signal(void) {
             start_signal_adpcm + block * SX_SPU_ADPCM_BLOCK_BYTES);
     }
     start_signal_ready = 1;
+}
+
+static void prepare_fanfare(void) {
+    if (fanfare_ready) return;
+    sx_spu_adpcm_state_t state;
+    sx_spu_adpcm_reset(&state);
+    for (unsigned block = 0; block < FANFARE_BLOCKS; block++) {
+        int16_t samples[SX_SPU_ADPCM_SAMPLES_PER_BLOCK];
+        for (unsigned i = 0; i < SX_SPU_ADPCM_SAMPLES_PER_BLOCK; i++) {
+            unsigned at = block * SX_SPU_ADPCM_SAMPLES_PER_BLOCK + i;
+            samples[i] = at < FANFARE_SAMPLES ? fanfare_sample(at) : 0;
+        }
+        sx_spu_adpcm_encode_block_fast(&state, samples,
+            block + 1u == FANFARE_BLOCKS ? 1u : 0u,
+            fanfare_adpcm + block * SX_SPU_ADPCM_BLOCK_BYTES);
+    }
+    fanfare_ready = 1;
 }
 
 static void start_signal(void) {
@@ -126,6 +158,24 @@ static void start_signal(void) {
     SpuSetKey(1, 0x0c);
     start_signal_vsync = VSync(-1);
     start_signal_playing = 1;
+}
+
+void sx_ofdm_tx_play_fanfare(void) {
+    if (fanfare_playing) return;
+    prepare_fanfare();
+    stop_channels();
+    SpuSetTransferMode(SPU_TRANSFER_BY_DMA);
+    SpuSetTransferStartAddr(FANFARE_ADDR);
+    SpuWrite((const uint32_t *)fanfare_adpcm, FANFARE_BYTES);
+    SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
+    SPU_CH_ADDR(2) = SPU_CH_ADDR(3) = getSPUAddr(FANFARE_ADDR);
+    SPU_CH_FREQ(2) = SPU_CH_FREQ(3) = getSPUSampleRate(SX_SAMPLE_RATE);
+    SPU_CH_ADSR1(2) = SPU_CH_ADSR1(3) = 0x00ff;
+    SPU_CH_ADSR2(2) = SPU_CH_ADSR2(3) = 0;
+    SPU_CH_VOL_L(2) = 0x2fff; SPU_CH_VOL_R(2) = 0;
+    SPU_CH_VOL_L(3) = 0; SPU_CH_VOL_R(3) = 0x2fff;
+    SpuSetKey(1, 0x0c);
+    fanfare_playing = 1;
 }
 
 static void spu_dma_handler(void) {
@@ -215,7 +265,7 @@ static void start_precomputed(void) {
         SpuWrite((const uint32_t *)(precomputed[1] + offset), channel_bytes);
         SpuIsTransferCompleted(SPU_TRANSFER_WAIT);
     }
-    /* Keep the OFDM voices independent from FSK voice 0.  Re-keying a voice
+    /* Keep the OFDM voices independent from any previous modem voice. Re-keying a voice
      * immediately after an ADPCM end block is not reliable on every SPU path. */
     SPU_CH_ADDR(2) = getSPUAddr(SPU_BUFFER_ADDR);
     SPU_CH_ADDR(3) = getSPUAddr(right_address);
@@ -294,7 +344,7 @@ int sx_ofdm_tx_begin(const uint8_t *data, size_t size) {
     packet_samples = audio_mode == 2u ? SX_OFDM_MONO_PACKET_SAMPLES : SX_OFDM_PACKET_SAMPLES;
     adpcm_blocks = (packet_samples + SX_SPU_ADPCM_SAMPLES_PER_BLOCK - 1u) / SX_SPU_ADPCM_SAMPLES_PER_BLOCK;
     /* The SPU plays complete 28-sample ADPCM blocks, including padding after
-     * the modem PCM.  Timing from packet_samples starts the next FSK early. */
+     * the modem PCM. */
     playback_packet_samples = adpcm_blocks * SX_SPU_ADPCM_SAMPLES_PER_BLOCK;
     channel_bytes = adpcm_blocks * SX_SPU_ADPCM_BLOCK_BYTES;
     chunk_bytes = channel_bytes * 2u;
@@ -408,6 +458,7 @@ void sx_ofdm_tx_update(void) {
 void sx_ofdm_tx_stop(void) {
     stop_channels();
     stream_active = start_signal_playing = 0;
+    fanfare_playing = 0;
     if (callbacks_installed) {
         int restore = EnterCriticalSection();
         InterruptCallback(IRQ_SPU, old_spu_callback);

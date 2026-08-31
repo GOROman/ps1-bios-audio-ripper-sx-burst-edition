@@ -45,7 +45,7 @@ int sx_audio_transmit_block(const uint8_t *container, size_t size, unsigned sequ
     (void)container;
     (void)size;
     (void)sequence;
-    /* V5 one-shot blocks depended on an FSK block header. */
+    /* Legacy one-shot blocks are not part of the continuous Burst transport. */
     status.phase = SX_TX_ERROR;
     status.error = -11;
     return -1;

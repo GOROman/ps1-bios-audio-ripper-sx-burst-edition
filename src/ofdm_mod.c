@@ -7,7 +7,7 @@ static complex_q12_t bins[2][SX_OFDM_FFT_SIZE];
 static int16_t sync_left[SX_OFDM_FFT_SIZE + SX_OFDM_CP_SIZE];
 static int16_t sync_right[SX_OFDM_FFT_SIZE + SX_OFDM_CP_SIZE];
 static uint8_t sync_ready;
-static const int16_t qpsk_levels[2] = { -2896, 2896 };
+static const int16_t qam16_levels[4] = { -3885, -1295, 3885, 1295 };
 
 static int is_pilot(unsigned carrier) {
     return carrier == 0 || carrier == 13 || carrier == 27 || carrier == 41 ||
@@ -117,14 +117,10 @@ static void render_symbol(int16_t *left, int16_t *right) {
 
 static void whiten(const uint8_t *source, uint8_t *target, uint32_t index) {
     uint32_t state = 0x9e3779b9u ^ index;
-    for (unsigned i = 0; i < SX_OFDM_PACKET_BYTES; i++) {
+    for (unsigned i = 0; i < SX_OFDM_WIRE_BYTES; i++) {
         state ^= state << 13; state ^= state >> 17; state ^= state << 5;
         target[i] = source[i] ^ (uint8_t)state;
     }
-}
-
-static unsigned nibble(const uint8_t *data, unsigned index) {
-    return index & 1 ? data[index >> 1] >> 4 : data[index >> 1] & 15;
 }
 
 static void ensure_sync(void) {
@@ -141,7 +137,8 @@ static void ensure_sync(void) {
 
 void sx_ofdm_modulate_packet(const uint8_t packet[SX_OFDM_PACKET_BYTES], uint32_t packet_index,
                              int16_t left[SX_OFDM_PACKET_SAMPLES], int16_t right[SX_OFDM_PACKET_SAMPLES]) {
-    uint8_t scrambled[SX_OFDM_PACKET_BYTES]; whiten(packet, scrambled, packet_index);
+    uint8_t protected_packet[SX_OFDM_WIRE_BYTES], scrambled[SX_OFDM_WIRE_BYTES];
+    sx_inner_fec_encode(packet, protected_packet); whiten(protected_packet, scrambled, packet_index);
     ensure_sync();
     memcpy(left, sync_left, sizeof(sync_left));
     memcpy(right, sync_right, sizeof(sync_right));
@@ -153,10 +150,12 @@ void sx_ofdm_modulate_packet(const uint8_t packet[SX_OFDM_PACKET_BYTES], uint32_
                 int32_t pilot = ((packet_index + symbol) & 1) ? -4096 : 4096;
                 set_bin(0, bin, pilot, 0); set_bin(1, bin, pilot, 0);
             } else {
-                unsigned codes = nibble(scrambled, symbol * SX_OFDM_DATA_CARRIERS + data_index);
+                /* One byte per carrier: each stereo channel carries one
+                 * 16-QAM nibble (I/Q = two bits each). */
+                unsigned codes = scrambled[symbol * SX_OFDM_DATA_CARRIERS + data_index];
                 for (unsigned channel = 0; channel < 2; channel++) {
-                    unsigned code = (codes >> (channel * 2u)) & 3u;
-                    set_bin(channel, bin, qpsk_levels[code & 1u], qpsk_levels[(code >> 1) & 1u]);
+                    unsigned code = (codes >> (channel * 4u)) & 15u;
+                    set_bin(channel, bin, qam16_levels[code & 3u], qam16_levels[(code >> 2) & 3u]);
                 }
                 data_index++;
             }
@@ -169,7 +168,8 @@ void sx_ofdm_modulate_packet(const uint8_t packet[SX_OFDM_PACKET_BYTES], uint32_
 void sx_ofdm_modulate_packet_mono(const uint8_t packet[SX_OFDM_PACKET_BYTES], uint32_t packet_index,
                                   int16_t left[SX_OFDM_MONO_PACKET_SAMPLES],
                                   int16_t right[SX_OFDM_MONO_PACKET_SAMPLES]) {
-    uint8_t scrambled[SX_OFDM_PACKET_BYTES]; whiten(packet, scrambled, packet_index);
+    uint8_t protected_packet[SX_OFDM_WIRE_BYTES], scrambled[SX_OFDM_WIRE_BYTES];
+    sx_inner_fec_encode(packet, protected_packet); whiten(protected_packet, scrambled, packet_index);
     ensure_sync();
     memcpy(left, sync_left, sizeof(sync_left));
     memcpy(right, sync_left, sizeof(sync_left));
@@ -183,8 +183,8 @@ void sx_ofdm_modulate_packet_mono(const uint8_t packet[SX_OFDM_PACKET_BYTES], ui
                 set_bin(0, bin, pilot, 0);
             } else {
                 unsigned code_index = symbol * SX_OFDM_DATA_CARRIERS + data_index;
-                unsigned code = (scrambled[code_index >> 2] >> ((code_index & 3u) * 2u)) & 3u;
-                set_bin(0, bin, qpsk_levels[code & 1u], qpsk_levels[(code >> 1) & 1u]);
+                unsigned code = (scrambled[code_index >> 1] >> ((code_index & 1u) * 4u)) & 15u;
+                set_bin(0, bin, qam16_levels[code & 3u], qam16_levels[(code >> 2) & 3u]);
                 data_index++;
             }
         }

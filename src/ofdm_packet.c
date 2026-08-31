@@ -35,7 +35,7 @@ int sx_ofdm_make_packet(const uint8_t *data, size_t size, uint32_t image_crc,
     gf_init(); memset(out, 0, SX_OFDM_PACKET_BYTES);
     /* Burst-interleave physical packet order across every FEC group. A short
      * analogue dropout then costs one shard in several groups instead of five
-     * adjacent shards in one group, so each 32+4 decoder can recover it. */
+     * adjacent shards in one group, so each 16+6 decoder can recover it. */
     size_t groups = sx_ofdm_group_count(size);
     size_t group = packet_index % groups;
     unsigned shard = (unsigned)(packet_index / groups);

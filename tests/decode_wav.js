@@ -106,7 +106,7 @@ function validateContainer(container, referenceBios) {
             const slice = referenceBios.subarray(blockIndex * 16384, blockIndex * 16384 + originalSize);
             restoredOk = crc32(slice) === originalCrc;
         }
-        report.push({ blockIndex, codec: codec === 1 ? 'LZSS' : 'RAW', storedSize, originalSize, storedOk, restoredOk });
+        report.push({ blockIndex, codec: codec === 1 ? 'LZSS' : (codec === 2 ? 'DEFLATE' : 'RAW'), storedSize, originalSize, storedOk, restoredOk });
         if (storedOk && restoredOk !== false) complete++;
         at += storedSize;
     }

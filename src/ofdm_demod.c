@@ -2,7 +2,7 @@
  * WebAssembly (freestanding wasm32) and the host can unit-test it.
  *
  * Pipeline: push captured stereo PCM at any rate -> windowed-sinc resample to
- * 44.1 kHz -> sync search -> per-packet FFT demod -> QPSK slice -> de-whiten ->
+ * 44.1 kHz -> sync search -> per-packet FFT demod -> 16QAM slice -> de-whiten ->
  * packet CRC.  Group assembly / container rebuild stay in JS.
  *
  * No libc: math comes from builtins and small local approximations, buffers are
@@ -12,7 +12,8 @@
 #include <stddef.h>
 
 #define SXD_PI 3.14159265358979323846
-#define FEC_PARITY_SHARDS 4u
+#define OFDM_VERSION 4u
+#define FEC_PARITY_SHARDS 6u
 
 #ifdef SXD_HOST_TEST
 #include <math.h>
@@ -74,15 +75,16 @@ static double SXD_LOG10(double x) {
 
 #define RATE 44100
 #define FFT 512
-#define CP 64
+#define CP 32
 #define SYMBOL (FFT + CP)
 #define PACKET_SAMPLES (SYMBOL * 5)
 #define MONO_PACKET_SAMPLES (SYMBOL * 9)
 #define FIRST_BIN 24
 #define CARRIERS 96
 #define DATA_CARRIERS 88
-#define PAYLOAD 144
-#define PACKET_BYTES 176
+#define PAYLOAD 280
+#define PACKET_BYTES 312
+#define WIRE_BYTES 352
 #define MAGIC 0x314f5853u
 #define LOCK_WINDOW 160
 #define AUDIO_CAP 200000
@@ -92,7 +94,20 @@ static const int PILOT_BINS[8] = { 24, 37, 51, 65, 79, 93, 107, 119 };
 static int is_pilot_carrier(int c) {
     return c == 0 || c == 13 || c == 27 || c == 41 || c == 55 || c == 69 || c == 83 || c == 95;
 }
-static const double QLEV[2] = { -0.70710678118654752, 0.70710678118654752 };
+static const double QLEV[4] = {
+    -0.9486832980505138, -0.31622776601683794,
+     0.9486832980505138,  0.31622776601683794
+};
+static int nearest_level(double value) {
+    int best = 0; double delta = value - QLEV[0];
+    double error = delta < 0 ? -delta : delta;
+    for (int i = 1; i < 4; i++) {
+        delta = value - QLEV[i];
+        double candidate = delta < 0 ? -delta : delta;
+        if (candidate < error) { error = candidate; best = i; }
+    }
+    return best;
+}
 
 /* ---- CRC32 (reflected, poly 0xedb88320) ---- */
 static uint32_t sxd_crc32(const uint8_t *data, int len) {
@@ -102,36 +117,6 @@ static uint32_t sxd_crc32(const uint8_t *data, int len) {
         for (int b = 0; b < 8; b++) crc = (crc >> 1) ^ (0xedb88320u & (uint32_t)(-(int32_t)(crc & 1)));
     }
     return crc ^ 0xffffffffu;
-}
-
-/* CRC-guided hard-decision repair.  A marginal QPSK decision commonly damages
- * just one of the 1408 packet bits.  Trying each bit is cheap on the browser
- * worker and turns that detectable error into a uniquely validated packet
- * without changing the wire format or weakening CRC acceptance. */
-static int repair_single_bit(uint8_t packet[PACKET_BYTES], uint32_t *sent_out,
-                             uint32_t *computed_out) {
-    uint8_t tmp[PACKET_BYTES];
-    for (int bit = 0; bit < PACKET_BYTES * 8; bit++) {
-        int byte = bit >> 3;
-        uint8_t mask = (uint8_t)(1u << (bit & 7));
-        packet[byte] ^= mask;
-        uint32_t magic = (uint32_t)packet[0] | ((uint32_t)packet[1] << 8) |
-                         ((uint32_t)packet[2] << 16) | ((uint32_t)packet[3] << 24);
-        if (magic == MAGIC && packet[4] == 3) {
-            uint32_t sent = (uint32_t)packet[28] | ((uint32_t)packet[29] << 8) |
-                            ((uint32_t)packet[30] << 16) | ((uint32_t)packet[31] << 24);
-            for (int i = 0; i < PACKET_BYTES; i++) tmp[i] = packet[i];
-            tmp[28] = tmp[29] = tmp[30] = tmp[31] = 0;
-            uint32_t computed = sxd_crc32(tmp, PACKET_BYTES);
-            if (sent == computed) {
-                *sent_out = sent;
-                *computed_out = computed;
-                return 1;
-            }
-        }
-        packet[byte] ^= mask;
-    }
-    return 0;
 }
 
 /* ---- state ---- */
@@ -194,10 +179,83 @@ static void fft(double *re, double *im) {
 /* ---- whiten (xorshift32, seed 0x9e3779b9 ^ index) ---- */
 static void whiten(const uint8_t *src, uint8_t *dst, uint32_t index) {
     uint32_t state = 0x9e3779b9u ^ index;
-    for (int i = 0; i < PACKET_BYTES; i++) {
+    for (int i = 0; i < WIRE_BYTES; i++) {
         state ^= state << 13; state ^= state >> 17; state ^= state << 5;
         dst[i] = src[i] ^ (uint8_t)state;
     }
+}
+
+static unsigned fec_bit(const uint8_t *data, unsigned bit) {
+    return (data[bit >> 3] >> (bit & 7u)) & 1u;
+}
+static void fec_set(uint8_t *data, unsigned bit, unsigned value) {
+    uint8_t mask = (uint8_t)(1u << (bit & 7u));
+    if (value) data[bit >> 3] |= mask; else data[bit >> 3] &= (uint8_t)~mask;
+}
+static int inner_fec_decode(const uint8_t *wire, uint8_t *packet) {
+    for (int i = 0; i < PACKET_BYTES; i++) packet[i] = 0;
+    int corrected = 0;
+    for (unsigned group = 0; group < PACKET_BYTES / 8u; group++) {
+        uint8_t code[9]; for (unsigned i = 0; i < 9; i++) code[i] = wire[group * 9u + i];
+        unsigned syndrome = 0, overall = 0;
+        for (unsigned position = 1; position <= 71; position++) {
+            if (fec_bit(code, position - 1u)) syndrome ^= position;
+            overall ^= fec_bit(code, position - 1u);
+        }
+        overall ^= fec_bit(code, 71u);
+        if (syndrome) {
+            if (!overall || syndrome > 71u) return -1;
+            fec_set(code, syndrome - 1u, !fec_bit(code, syndrome - 1u)); corrected++;
+        } else if (overall) corrected++;
+        unsigned data_bit = 0;
+        for (unsigned position = 1; position <= 71; position++) {
+            if (!(position & (position - 1u))) continue;
+            fec_set(packet + group * 8u, data_bit++, fec_bit(code, position - 1u));
+        }
+    }
+    return corrected;
+}
+
+static int inner_fec_failure_group(const uint8_t *wire) {
+    for (unsigned group = 0; group < PACKET_BYTES / 8u; group++) {
+        const uint8_t *code = wire + group * 9u;
+        unsigned syndrome = 0, overall = 0;
+        for (unsigned position = 1; position <= 71; position++) {
+            if (fec_bit(code, position - 1u)) syndrome ^= position;
+            overall ^= fec_bit(code, position - 1u);
+        }
+        overall ^= fec_bit(code, 71u);
+        if (syndrome && (!overall || syndrome > 71u)) return (int)group;
+    }
+    return -1;
+}
+
+static int packet_crc_valid(const uint8_t *packet) {
+    uint32_t magic = (uint32_t)packet[0] | ((uint32_t)packet[1] << 8) |
+                     ((uint32_t)packet[2] << 16) | ((uint32_t)packet[3] << 24);
+    if (magic != MAGIC || packet[4] != OFDM_VERSION) return 0;
+    uint32_t sent = (uint32_t)packet[28] | ((uint32_t)packet[29] << 8) |
+                    ((uint32_t)packet[30] << 16) | ((uint32_t)packet[31] << 24);
+    uint8_t tmp[PACKET_BYTES];
+    for (int i = 0; i < PACKET_BYTES; i++) tmp[i] = packet[i];
+    tmp[28] = tmp[29] = tmp[30] = tmp[31] = 0;
+    return sent == sxd_crc32(tmp, PACKET_BYTES);
+}
+
+/* A detected SECDED double error identifies its 72-bit codeword.  CRC32 lets
+ * us test the 72 possible first-bit corrections without accepting ambiguity;
+ * SECDED then corrects the remaining bit. */
+static int inner_fec_chase(uint8_t *wire, uint8_t *packet) {
+    int group = inner_fec_failure_group(wire);
+    if (group < 0) return -1;
+    for (unsigned bit = 0; bit < 72u; bit++) {
+        unsigned at = (unsigned)group * 72u + bit;
+        fec_set(wire, at, !fec_bit(wire, at));
+        int status = inner_fec_decode(wire, packet);
+        fec_set(wire, at, !fec_bit(wire, at));
+        if (status >= 0 && packet_crc_valid(packet)) return status + 1;
+    }
+    return -1;
 }
 
 /* Offline captures can contain several independently framed OFDM bursts, so
@@ -206,20 +264,13 @@ static void whiten(const uint8_t *src, uint8_t *dst, uint32_t index) {
  * complete magic/version/CRC match. */
 static int probe_whitening_index(const uint8_t *scrambled, uint32_t parity,
                                  uint8_t *packet, uint32_t *sent_out, uint32_t *computed_out) {
-    uint8_t candidate[PACKET_BYTES], tmp[PACKET_BYTES];
+    uint8_t protected_packet[WIRE_BYTES], candidate[PACKET_BYTES], tmp[PACKET_BYTES];
     for (uint32_t index = parity & 1u; index < 4096u; index += 2u) {
-        uint32_t state = 0x9e3779b9u ^ index;
-        for (int i = 0; i < 5; i++) {
-            state ^= state << 13; state ^= state >> 17; state ^= state << 5;
-            candidate[i] = scrambled[i] ^ (uint8_t)state;
-        }
+        whiten(scrambled, protected_packet, index);
+        if (inner_fec_decode(protected_packet, candidate) < 0) continue;
         uint32_t magic = (uint32_t)candidate[0] | ((uint32_t)candidate[1] << 8) |
                          ((uint32_t)candidate[2] << 16) | ((uint32_t)candidate[3] << 24);
-        if (magic != MAGIC || candidate[4] != 3) continue;
-        for (int i = 5; i < PACKET_BYTES; i++) {
-            state ^= state << 13; state ^= state >> 17; state ^= state << 5;
-            candidate[i] = scrambled[i] ^ (uint8_t)state;
-        }
+        if (magic != MAGIC || candidate[4] != OFDM_VERSION) continue;
         uint32_t sent = (uint32_t)candidate[28] | ((uint32_t)candidate[29] << 8) |
                         ((uint32_t)candidate[30] << 16) | ((uint32_t)candidate[31] << 24);
         for (int i = 0; i < PACKET_BYTES; i++) tmp[i] = candidate[i];
@@ -392,7 +443,7 @@ static void equalize_carriers(const double *source, int base,
 }
 
 static void decode_packet(int at, uint32_t index, double score, int swap, sxd_result_t *out) {
-    uint8_t nibbles[352]; int na = 0;
+    uint8_t scrambled[WIRE_BYTES], protected_packet[WIRE_BYTES]; int byte_at = 0;
     double channel_r[2][FFT], channel_i[2][FFT];
     for (int ch = 0; ch < 2; ch++) {
         const double *source = (ch ^ (swap ? 1 : 0)) ? audioR : audioL;
@@ -430,8 +481,8 @@ static void decode_packet(int at, uint32_t index, double score, int swap, sxd_re
                 double c = SXD_COS(-phase), s = SXD_SIN(-phase);
                 double zr = (re[bin] * c - im[bin] * s) / gain;
                 double zi = (re[bin] * s + im[bin] * c) / gain;
-                int ri = zr >= 0 ? 1 : 0, ii = zi >= 0 ? 1 : 0;
-                codes_all[ch][carrier] = ri | (ii << 1);
+                int ri = nearest_level(zr), ii = nearest_level(zi);
+                codes_all[ch][carrier] = ri | (ii << 2);
                 double error = (zr - QLEV[ri]) * (zr - QLEV[ri]) + (zi - QLEV[ii]) * (zi - QLEV[ii]);
                 evm_sum += error;
                 out->carrier_error[carrier] += error;
@@ -443,12 +494,12 @@ static void decode_packet(int at, uint32_t index, double score, int swap, sxd_re
         for (int i = 0; i < 88; i++) {
             while (codes_all[0][idx0] < 0) idx0++;
             while (codes_all[1][idx1] < 0) idx1++;
-            nibbles[na++] = (uint8_t)(codes_all[0][idx0++] | (codes_all[1][idx1++] << 2));
+            scrambled[byte_at++] = (uint8_t)(codes_all[0][idx0++] | (codes_all[1][idx1++] << 4));
         }
     }
-    uint8_t scrambled[PACKET_BYTES];
-    for (int i = 0; i < PACKET_BYTES; i++) scrambled[i] = (uint8_t)(nibbles[i * 2] | (nibbles[i * 2 + 1] << 4));
-    whiten(scrambled, out->packet, index);
+    whiten(scrambled, protected_packet, index);
+    int inner_status = inner_fec_decode(protected_packet, out->packet);
+    if (inner_status < 0) inner_status = inner_fec_chase(protected_packet, out->packet);
     uint32_t sent = (uint32_t)out->packet[28] | ((uint32_t)out->packet[29] << 8) |
                     ((uint32_t)out->packet[30] << 16) | ((uint32_t)out->packet[31] << 24);
     uint8_t tmp[PACKET_BYTES];
@@ -458,18 +509,14 @@ static void decode_packet(int at, uint32_t index, double score, int swap, sxd_re
     uint32_t magic = (uint32_t)out->packet[0] | ((uint32_t)out->packet[1] << 8) |
                      ((uint32_t)out->packet[2] << 16) | ((uint32_t)out->packet[3] << 24);
     double evm = SXD_SQRT(evm_sum / (evm_cnt > 0 ? evm_cnt : 1));
-    out->valid = magic == MAGIC && out->packet[4] == 3 && sent == computed;
-    if (!out->valid && repair_single_bit(out->packet, &sent, &computed))
-        out->valid = 1;
-    if (!out->valid && probe_whitening_index(scrambled, index, out->packet, &sent, &computed))
-        out->valid = 1;
+    out->valid = inner_status >= 0 && magic == MAGIC && out->packet[4] == OFDM_VERSION && sent == computed;
     out->sent = sent; out->computed = computed;
     out->score = score; out->evm = evm;
     out->snr = -20.0 * SXD_LOG10(evm > 1e-9 ? evm : 1e-9);
     out->phase = phase_sum / 4; out->timing = timing_sum / 4; out->swap = swap;
 }
 
-/* Mono packets carry the same 704 QPSK dibits over eight data symbols.  The
+/* Mono packets carry 704 16QAM nibbles over eight data symbols.  The
  * sync symbol occupies every carrier, so it also gives a per-carrier complex
  * channel estimate.  Dividing by that estimate removes analogue frequency
  * response and phase distortion before the pilots correct residual drift. */
@@ -515,8 +562,8 @@ static void decode_mono_packet(int at, uint32_t index, double score, int channel
             double c = SXD_COS(-phase), s = SXD_SIN(-phase);
             double zr = (mr * c - mi * s) / gain;
             double zi = (mr * s + mi * c) / gain;
-            int ri = zr >= 0 ? 1 : 0, ii = zi >= 0 ? 1 : 0;
-            codes[ca++] = (uint8_t)(ri | (ii << 1));
+            int ri = nearest_level(zr), ii = nearest_level(zi);
+            codes[ca++] = (uint8_t)(ri | (ii << 2));
             double error = (zr - QLEV[ri]) * (zr - QLEV[ri]) + (zi - QLEV[ii]) * (zi - QLEV[ii]);
             evm_sum += error;
             out->carrier_error[carrier] += error;
@@ -524,11 +571,12 @@ static void decode_mono_packet(int at, uint32_t index, double score, int channel
             evm_cnt++;
         }
     }
-    uint8_t scrambled[PACKET_BYTES];
-    for (int i = 0; i < PACKET_BYTES; i++)
-        scrambled[i] = (uint8_t)(codes[i * 4] | (codes[i * 4 + 1] << 2) |
-                                 (codes[i * 4 + 2] << 4) | (codes[i * 4 + 3] << 6));
-    whiten(scrambled, out->packet, index);
+    uint8_t scrambled[WIRE_BYTES], protected_packet[WIRE_BYTES];
+    for (int i = 0; i < WIRE_BYTES; i++)
+        scrambled[i] = (uint8_t)(codes[i * 2] | (codes[i * 2 + 1] << 4));
+    whiten(scrambled, protected_packet, index);
+    int inner_status = inner_fec_decode(protected_packet, out->packet);
+    if (inner_status < 0) inner_status = inner_fec_chase(protected_packet, out->packet);
     uint32_t sent = (uint32_t)out->packet[28] | ((uint32_t)out->packet[29] << 8) |
                     ((uint32_t)out->packet[30] << 16) | ((uint32_t)out->packet[31] << 24);
     uint8_t tmp[PACKET_BYTES];
@@ -538,10 +586,7 @@ static void decode_mono_packet(int at, uint32_t index, double score, int channel
     uint32_t magic = (uint32_t)out->packet[0] | ((uint32_t)out->packet[1] << 8) |
                      ((uint32_t)out->packet[2] << 16) | ((uint32_t)out->packet[3] << 24);
     double evm = SXD_SQRT(evm_sum / (evm_cnt > 0 ? evm_cnt : 1));
-    out->valid = magic == MAGIC && out->packet[4] == 3 && sent == computed;
-    if (!out->valid && repair_single_bit(out->packet, &sent, &computed)) {
-        magic = MAGIC; out->valid = 1;
-    }
+    out->valid = inner_status >= 0 && magic == MAGIC && out->packet[4] == OFDM_VERSION && sent == computed;
     if (!out->valid && probe_whitening_index(scrambled, index, out->packet, &sent, &computed)) {
         magic = MAGIC; out->valid = 1;
     }
@@ -648,7 +693,7 @@ int sxd_push(const float *left, const float *right, int frames, double rate,
         else decode_robust(at, expected_packet, sc, &r);
         /* If capture started after packet zero, pilot correlation still locks
          * but de-whitening with index zero makes every CRC fail.  Probe the
-         * four indices FEC can cover, then continue from the recovered index. */
+         * six indices FEC can cover, then continue from the recovered index. */
         if (!r.valid) {
             for (uint32_t skip = 1; skip <= FEC_PARITY_SHARDS; skip++) {
                 sxd_result_t candidate;
@@ -657,10 +702,10 @@ int sxd_push(const float *left, const float *right, int frames, double rate,
                 if (candidate.valid) { r = candidate; expected_packet += skip; break; }
             }
         }
-        /* OFDM-only V6 has no external header to announce a transmitter
+        /* OFDM-only Burst has no external header to announce a transmitter
          * restart. If the console restarts at packet zero while the browser
-         * still expects a high index, probe the first five whitening indices
-         * and rebase automatically on a complete packet CRC match. */
+         * still expects a high index, probe the first FEC-covered indices and
+         * rebase on a complete packet CRC match. */
         if (!r.valid && expected_packet > FEC_PARITY_SHARDS) {
             for (uint32_t restart = 0; restart <= FEC_PARITY_SHARDS; restart++) {
                 sxd_result_t candidate;
@@ -671,8 +716,8 @@ int sxd_push(const float *left, const float *right, int frames, double rate,
         }
         locked = sc >= 0.6;
 
-        /* Before the first valid packet, a weak match can be the tail of the
-         * FSK header rather than a lost OFDM packet.  Advance only a small
+        /* Before the first valid packet, a weak match can be stale start-signal
+         * energy rather than a lost OFDM packet.  Advance only a small
          * search step so packet zero and its whitening sequence stay aligned. */
         if (!r.valid && sc < 0.6) {
             int consume = at + 64;
@@ -708,8 +753,8 @@ int sxd_push(const float *left, const float *right, int frames, double rate,
             o->total_size = 0; o->offset = 0; o->payload_size = 0; o->image_crc = 0;
         }
 
-        /* The SPU plays complete 28-sample ADPCM blocks.  Consume the same
-         * padded stride as the transmitter (mono 5208, stereo 2884), rather
+        /* The SPU plays complete 28-sample ADPCM blocks. Consume the same
+         * padded stride as the transmitter (mono 4900, stereo 2744), rather
          * than leaving padding for the next sync search. */
         int consume_samples = packet_samples;
         if (packet_stride > packet_samples && audio_len >= at + packet_stride + 4) {

@@ -20,6 +20,7 @@
 #ifndef SX_TRANSFER_SIZE
 #define SX_TRANSFER_SIZE SX_BIOS_SIZE /* full 512 KiB BIOS transfer */
 #endif
+#define SX_APP_VERSION "1.0"
 
 static DISPENV disp[2];
 static DRAWENV draw[2];
@@ -33,6 +34,8 @@ static TILE ui_tile[2][4];
 static SPRT marker_sprite;
 static DR_TPAGE marker_tpage;
 static int status_font;
+static int compression_percent_font;
+static uint32_t compression_start_frame;
 extern const uint8_t marker_tim[];
 
 static void init_marker_sprite(void) {
@@ -56,14 +59,16 @@ static void draw_ui(unsigned page, uint8_t brightness, unsigned progress, int tr
     PutDrawEnv(&draw[page]);
     (void)brightness;
     unsigned filled = progress > 1000u ? 1000u : progress;
+    /* Keep room for the numeric percentage beside both progress bars. */
+    unsigned bar_width = 232u;
     setTile(&ui_tile[page][0]); setXY0(&ui_tile[page][0], 0, 4); setWH(&ui_tile[page][0], 320, 16);
     setRGB0(&ui_tile[page][0], 70, 3, 12);
     setTile(&ui_tile[page][1]); setXY0(&ui_tile[page][1], 0, 4); setWH(&ui_tile[page][1], 8, 216);
     setRGB0(&ui_tile[page][1], transferring ? 255 : 150, transferring ? 48 : 12, 18);
-    setTile(&ui_tile[page][2]); setXY0(&ui_tile[page][2], 16, 211); setWH(&ui_tile[page][2], 288, 12);
+    setTile(&ui_tile[page][2]); setXY0(&ui_tile[page][2], 16, 211); setWH(&ui_tile[page][2], bar_width, 12);
     setRGB0(&ui_tile[page][2], 12, 4, 8);
     setTile(&ui_tile[page][3]); setXY0(&ui_tile[page][3], 16, 211);
-    setWH(&ui_tile[page][3], (int)(288u * filled / 1000u), 12);
+    setWH(&ui_tile[page][3], (int)(bar_width * filled / 1000u), 12);
     setRGB0(&ui_tile[page][3], splash ? 220 : 255, splash ? 24 : 58, splash ? 45 : 18);
     DrawPrim((const uint32_t *)&ui_tile[page][0]);
     DrawPrim((const uint32_t *)&ui_tile[page][1]);
@@ -84,6 +89,7 @@ static void init(void) {
     }
     FntLoad(960, 0);
     status_font = FntOpen(18, 25, 284, 180, 0, 512);
+    compression_percent_font = FntOpen(256, 211, 64, 16, 0, 64);
     SpuInit();
     init_marker_sprite();
     InitPAD(pad_data[0], 34, pad_data[1], 34); StartPAD(); ChangeClearPAD(0);
@@ -93,21 +99,40 @@ static void init(void) {
 static void compression_progress(uint16_t completed, uint16_t total, size_t stored, void *user) {
     (void)user;
     unsigned permille = total ? completed * 1000u / total : 0;
+    unsigned elapsed_ms = (unsigned)(((uint32_t)VSync(-1) - compression_start_frame) * 1000u / 60u);
     draw_ui(startup_page, 128, permille, 0, 1);
-    FntPrint(status_font, "PSX-BASIC(SX) Ver 1.0\n\n");
     FntPrint(status_font, "PS1 BIOS AUDIO RIPPER SX\n\n");
-    FntPrint(status_font, "LZSS COMPRESSING...\n\n");
+    FntPrint(status_font, "MIXED CODEC COMPRESSING...\n\n");
     FntPrint(status_font, "BLOCK %03u/%03u\n", completed, total);
     FntPrint(status_font, "PROGRESS %3u.%u%%\n", permille / 10u, permille % 10u);
+    FntPrint(status_font, "ELAPSED %02u:%02u.%03u\n",
+        elapsed_ms / 60000u, (elapsed_ms / 1000u) % 60u, elapsed_ms % 1000u);
     FntPrint(status_font, "STORED %u BYTES\n", (unsigned)stored);
-    FntFlush(status_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
+    FntPrint(compression_percent_font, "%3u.%u%%", permille / 10u, permille % 10u);
+    FntFlush(status_font); FntFlush(compression_percent_font);
+    DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
 }
 
-static void compression_done(void) {
+static void compression_done(size_t packed, unsigned elapsed_ms) {
+    unsigned ratio_hundredths = 0;
+    if (SX_TRANSFER_SIZE) {
+        unsigned scaled = (unsigned)((packed * 100u) / SX_TRANSFER_SIZE);
+        unsigned remainder = (unsigned)((packed * 100u) % SX_TRANSFER_SIZE);
+        ratio_hundredths = scaled * 100u +
+            (unsigned)((remainder * 100u) / SX_TRANSFER_SIZE);
+    }
+    unsigned saved = packed < SX_TRANSFER_SIZE ? (unsigned)(SX_TRANSFER_SIZE - packed) : 0;
     draw_ui(startup_page, 128, 1000, 0, 1);
-    FntPrint(status_font, "PSX-BASIC(SX) Ver 1.0\n\n");
-    FntPrint(status_font, "LZSS COMPLETE\n\nOk\n");
-    FntFlush(status_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
+    FntPrint(status_font, "MIXED CODEC COMPLETE\n\n");
+    FntPrint(status_font, "TIME %02u:%02u.%03u\n",
+        elapsed_ms / 60000u, (elapsed_ms / 1000u) % 60u, elapsed_ms % 1000u);
+    FntPrint(status_font, "STORED %u BYTES\n", (unsigned)packed);
+    FntPrint(status_font, "RATIO %u.%02u%%\n", ratio_hundredths / 100u, ratio_hundredths % 100u);
+    FntPrint(status_font, "SAVED %u BYTES\n", saved);
+    FntPrint(compression_percent_font, "100.0%%");
+    FntFlush(status_font); FntFlush(compression_percent_font);
+    DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
+    for (unsigned frame = 0; frame < 60u; frame++) VSync(0);
 }
 
 static void switch_to_transfer_video(void) {
@@ -162,22 +187,28 @@ int main(void) {
 #endif
     const uint8_t *bios = (const uint8_t *)SX_BIOS_ADDR;
     draw_ui(startup_page, 128, 0, 0, 1);
-    FntPrint(status_font, "PSX-BASIC(SX) Ver 1.0\n\n");
-    FntPrint(status_font, "PS1 BIOS AUDIO RIPPER SX\n\n");
-    FntPrint(status_font, "LZSS PREPARING...\n");
+    FntPrint(status_font, "PS1 BIOS AUDIO RIPPER SX\n");
+    FntPrint(status_font, "VERSION %s / WIRE V%u\n", SX_APP_VERSION, SX_WIRE_VERSION);
+    FntPrint(status_font, "BUILD %s %s\n\n", __DATE__, __TIME__);
+    FntPrint(status_font, "MIXED CODEC PREPARING...\n");
     FntFlush(status_font); DrawSync(0); VSync(0); PutDispEnv(&disp[startup_page]);
     uint32_t crc = sx_crc32(bios, SX_BIOS_SIZE, 0);
+    compression_start_frame = (uint32_t)VSync(-1);
     size_t packed = sx_build_container_progress_mode(bios, SX_TRANSFER_SIZE, container, sizeof(container),
                                                      compression_progress, 0, container_mode);
-    compression_done();
+    unsigned compression_elapsed_ms =
+        (unsigned)(((uint32_t)VSync(-1) - compression_start_frame) * 1000u / 60u);
+    compression_done(packed, compression_elapsed_ms);
     switch_to_transfer_video();
-    unsigned lzss_blocks = 0, raw_blocks = 0;
+    unsigned lzss_blocks = 0, deflate_blocks = 0, raw_blocks = 0;
     if (packed >= sizeof(sx_header_t)) {
         const sx_header_t *header = (const sx_header_t *)container;
         size_t offset = sizeof(*header);
         for (unsigned i = 0; i < header->block_count && offset + sizeof(sx_block_header_t) <= packed; i++) {
             const sx_block_header_t *block = (const sx_block_header_t *)(container + offset);
-            if (block->codec == SX_CODEC_LZSS) lzss_blocks++; else raw_blocks++;
+            if (block->codec == SX_CODEC_LZSS) lzss_blocks++;
+            else if (block->codec == SX_CODEC_DEFLATE) deflate_blocks++;
+            else raw_blocks++;
             offset += sizeof(*block) + block->stored_size;
         }
     }
@@ -187,10 +218,8 @@ int main(void) {
     int clear_text_frames = 0;
     int stopped = 0;
     unsigned boot_line = 0;
-    unsigned boot_char = 0;
     int boot_next_frame = 0;
-    static const char load_command[] = "LOAD\"BURST\"";
-    static const char run_command[] = "RUN";
+    uint32_t transfer_start_frame = 0;
 #ifdef SX_TEST_AUTOSTART
     int autostarted = 0;
 #endif
@@ -199,7 +228,12 @@ int main(void) {
         const PADTYPE *pad = (const PADTYPE *)pad_data[0];
         uint16_t buttons = pad->stat ? 0xffff : pad->btn;
 #ifdef SX_TEST_AUTOSTART
-        if (!autostarted && packed) { autostarted = 1; sx_audio_transmit(container, packed); }
+        if (!autostarted && packed) {
+            autostarted = 1;
+            command_issued = 1;
+            transfer_start_frame = (uint32_t)VSync(-1);
+            sx_audio_transmit(container, packed);
+        }
 #endif
         const sx_tx_status_t *current_tx = sx_audio_status();
         sx_audio_set_mode(BURST_AUDIO_MODE);
@@ -216,6 +250,7 @@ int main(void) {
             command_issued = 1;
             clear_text_frames = 2;
             stopped = 0;
+            transfer_start_frame = (uint32_t)VSync(-1);
             sx_audio_transmit(container, packed);
         }
         previous = buttons;
@@ -227,30 +262,6 @@ int main(void) {
                     boot_line++;
                     boot_next_frame = frame + 8;
                 } else if (boot_line == 4) {
-                    boot_line = 5;
-                    boot_char = 0;
-                    boot_next_frame = frame + 3;
-                } else if (boot_line == 5) {
-                    if (boot_char < sizeof(load_command) - 1) {
-                        boot_char++;
-                        boot_next_frame = frame + 3;
-                    } else {
-                        boot_line = 6;
-                        boot_next_frame = frame + 8;
-                    }
-                } else if (boot_line == 6) {
-                    boot_line = 7;
-                    boot_char = 0;
-                    boot_next_frame = frame + 3;
-                } else if (boot_line == 7) {
-                    if (boot_char < sizeof(run_command) - 1) {
-                        boot_char++;
-                        boot_next_frame = frame + 3;
-                    } else {
-                        boot_line = 8;
-                        boot_next_frame = frame + 8;
-                    }
-                } else if (boot_line == 8) {
                     boot_line = 9;
                     boot_next_frame = frame + 8;
                 }
@@ -262,10 +273,20 @@ int main(void) {
             const sx_ofdm_tx_status_t *ofdm = sx_ofdm_tx_status();
             if (ofdm->fifo_packets < ofdm->fifo_capacity) continue;
         }
+        if (tx->phase == SX_TX_DONE) sx_ofdm_tx_play_fanfare();
         int transferring = tx->phase == SX_TX_PREPARING || tx->phase == SX_TX_SENDING;
         unsigned transfer_progress = tx->progress_permille;
         if (tx->phase == SX_TX_DONE) transfer_progress = 1000;
+        unsigned transfer_elapsed_ms = 0;
+        unsigned transfer_remaining = (unsigned)packed;
+        if (command_issued) {
+            transfer_elapsed_ms = (unsigned)(((uint32_t)VSync(-1) - transfer_start_frame) * 1000u / 60u);
+            if (transfer_progress >= 1000u) transfer_remaining = 0;
+            else transfer_remaining -= (unsigned)(((uint64_t)transfer_remaining * transfer_progress) / 1000u);
+        }
         draw_ui(page, transferring ? 128 : 96, transfer_progress, transferring, 0);
+        if (command_issued)
+            FntPrint(compression_percent_font, "%3u.%u%%", transfer_progress / 10u, transfer_progress % 10u);
         if (clear_text_frames) {
             clear_text_frames--;
             goto render_frame;
@@ -287,28 +308,18 @@ int main(void) {
             goto render_frame;
         }
         if (!command_issued) {
-            if (boot_line >= 1) FntPrint(status_font, "PS1 BIOS RIPPER SX\n");
+            if (boot_line >= 1) {
+                FntPrint(status_font, "PS1 BIOS RIPPER SX\n");
+                FntPrint(status_font, "VERSION %s / WIRE V%u\n", SX_APP_VERSION, SX_WIRE_VERSION);
+                FntPrint(status_font, "BUILD %s %s\n", __DATE__, __TIME__);
+            }
             if (boot_line >= 2) FntPrint(status_font, "2MB RAM SYSTEM\n");
             if (boot_line >= 3) FntPrint(status_font, "1MB VRAM 512KB SPU RAM\n\n");
             if (boot_line >= 4) FntPrint(status_font, "BURST EDITION / WIRE V6\n");
-            if (boot_line >= 5) {
-                unsigned load_chars = boot_line == 5 ? boot_char : sizeof(load_command) - 1u;
-                for (unsigned i = 0; i < load_chars; i++)
-                    FntPrint(status_font, "%c", load_command[i]);
-                FntPrint(status_font, "\n");
-            }
-            if (boot_line >= 6) FntPrint(status_font, "Ok\n\n");
-            if (boot_line >= 7) {
-                unsigned run_chars = boot_line == 7 ? boot_char : sizeof(run_command) - 1u;
-                for (unsigned i = 0; i < run_chars; i++)
-                    FntPrint(status_font, "%c", run_command[i]);
-                FntPrint(status_font, "\n");
-            }
-            if (boot_line >= 8) FntPrint(status_font, "Ok\n\n");
             if (boot_line >= 9) {
                 FntPrint(status_font, "MODE: OFDM STEREO\n");
                 FntPrint(status_font, "BLOCK SIZE: %u KiB\n", wire_block_kib);
-                FntPrint(status_font, "FEC: 32+4 / CONTINUOUS STREAM\n");
+                FntPrint(status_font, "FEC: 16+6 / CONTINUOUS STREAM\n");
                 if ((VSync(-1) / 30) & 1)
                     FntPrint(status_font, "PRESS START BUTTON\n");
             }
@@ -317,18 +328,23 @@ int main(void) {
         FntPrint(status_font, "PS1 BIOS RIPPER SX // BURST\nRACE CONTROL / WIRE V6\n----------------------------\n");
         if (transferring)
             FntPrint(status_font, "LAP %03u/%03u\n", tx->block + 1u, tx->blocks);
-        FntPrint(status_font, "LOAD\"BURST\"\nOk\nRUN\nOk\n");
+        if (command_issued) {
+            FntPrint(status_font, "ELAPSED %02u:%02u.%03u\n",
+                transfer_elapsed_ms / 60000u, (transfer_elapsed_ms / 1000u) % 60u,
+                transfer_elapsed_ms % 1000u);
+            if (transferring)
+                FntPrint(status_font, "REMAINING %u BYTES\n", transfer_remaining);
+        }
         if (!command_issued) {
             if ((VSync(-1) / 6) & 1) FntPrint(status_font, "PRESS START BUTTON\n");
         } else {
-            FntPrint(status_font, "CSAVE \"PS1-BIOS\"\n");
             FntPrint(status_font, "BIOS %u BYTES\nCRC32 %08x\n", SX_TRANSFER_SIZE, crc);
             FntPrint(status_font, "SX %u bytes / %u blocks\n", (unsigned)packed,
                      (unsigned)((SX_TRANSFER_SIZE + SX_BLOCK_SIZE - 1) / SX_BLOCK_SIZE));
-            FntPrint(status_font, "CODEC LZSS:%u RAW:%u %u%%\n", lzss_blocks, raw_blocks,
+            FntPrint(status_font, "CODEC DFL:%u LZS:%u RAW:%u %u%%\n", deflate_blocks, lzss_blocks, raw_blocks,
                      packed ? (unsigned)((packed * 100u) / SX_BIOS_SIZE) : 0);
             FntPrint(status_font, "AUDIO [OFDM STEREO]\n");
-            FntPrint(status_font, "BLOCK SIZE %u KiB / FEC 32+4\n", wire_block_kib);
+            FntPrint(status_font, "BLOCK SIZE %u KiB / FEC 16+6\n", wire_block_kib);
             FntPrint(status_font, "CONTINUOUS OFDM / NO FSK\n");
         }
         if (command_issued && tx->phase == SX_TX_PREPARING) {
@@ -354,10 +370,10 @@ int main(void) {
         } else if (command_issued && tx->phase == SX_TX_DONE) {
             FntPrint(status_font, "BLOCKS %03u/%03u  %u BYTES EACH\n",
                 tx->blocks, tx->blocks, tx->block_bytes);
-            FntPrint(status_font, "OFDM PAYLOAD SENT 100.0%%\nTRANSFER COMPLETE\nOk\n");
+            FntPrint(status_font, "OFDM PAYLOAD SENT 100.0%%\nTRANSFER COMPLETE\n");
         } else if (command_issued && stopped) {
             FntPrint(status_font, "AUDIO OUTPUT STOPPED\n\n");
-            FntPrint(status_font, "CIRCLE/START: TRANSMIT  CROSS: STOP\nOk\n");
+            FntPrint(status_font, "CIRCLE/START: TRANSMIT  CROSS: STOP\n");
         }
         else if (command_issued) FntPrint(status_font, "CONNECT AUDIO L/R TO PC\nCIRCLE/START: TRANSMIT  CROSS: STOP\n");
 render_frame:
@@ -365,7 +381,7 @@ render_frame:
             DrawPrim((const uint32_t *)&marker_tpage);
             DrawPrim((const uint32_t *)&marker_sprite);
         }
-        FntFlush(status_font);
+        FntFlush(status_font); FntFlush(compression_percent_font);
         DrawSync(0); VSync(0); PutDispEnv(&disp[page]); page ^= 1;
     }
 }

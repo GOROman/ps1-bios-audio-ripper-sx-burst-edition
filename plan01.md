@@ -1,5 +1,7 @@
 # plan01 — OFDM デコード精度の改善
 
+> 2026-08-31追記: 以下の旧V2検討項目に対し、現行Burst V6では高速化実装を先行して反映した。現行仕様は16QAM・CP32・内側SECDED・外側16+6・固定Deflateで、FSKは使用しない。旧V2の記述は比較用に保持する。
+
 ## 現状の把握
 
 - **ADPCM は既に最良**: OFDM データ経路（`src/ofdm_tx.c:92`）は `sx_spu_adpcm_encode_block`
@@ -109,3 +111,29 @@
 - **実機確認 PENDING**: 物理PlayStationの正常な片チャンネルからブラウザまでの
   復調成功は未確認。ビルドや合成ループバックを実機成功として扱わない。
 - **★C〜★E 未実施**: 現行wire V2と理論実効レートは変更していない。
+
+## 2026-08-31 Burst V6 高速化実装
+
+- **16QAM + CP32**: 1パケットを同期シンボル1 + データシンボル4とし、wire payloadを280 bytesへ拡大。
+- **内側SECDED**: 312-byte packetを39個の(72,64)符号語へ展開して352-byte wireへマッピング。単一ビット誤りを復元し、二重誤りは外側FECへ渡す。
+- **外側FEC 16+6**: 16 data shards + 6 parity shardsへ変更。物理パケット順は従来どおりグループ間インターリーブを維持。
+- **固定Deflate**: 各16 KiBコンテナブロックでLZSS・固定Huffman Deflate・RAWを比較し、最小のものを保存。ブラウザにも同じ固定Deflate復号を実装。
+- **FSKなし**: 現行Burstは開始信号を検出した後、連続ステレオOFDMを直接復調する。旧FSK処理は既発行V3キャプチャ互換のためのレガシーコードとしてのみ残す。
+- **検証結果**: `make test` PASS。合成PCMループバックは88/88 packet CRC、4パケット連続消失の外側FEC復元、イメージCRC32一致を確認。物理PlayStation音声からの復元は未確認（PENDING）。
+
+## 2026-08-31 圧縮V2候補
+
+Mac Studioのホストスイープで、BIOS解析Gistのヒューリスティックな境界
+`0x044C60`を使う2領域LZMA2が最小になった。MIPS領域は4-byte命令境界を
+`lp=2`／`lc=2`でモデル化し、リソース領域は通常の`lc=3`／`lp=0`とした。
+辞書は両方256 KiBで、C++/liblzmaの自己記述V2コンテナは実BIOSで
+197,887 bytesになった。
+
+`include/sx_format.h`にV2ヘッダ／領域ヘッダとcodec IDを追加し、
+`tools/sx_v2_lzma.cpp`にMacホスト基準エンコーダ、復元、領域CRC、全体CRCの
+検証を追加した。生成データの`make v2-lzma-test`はPASS。
+
+V2は現行V1のwire／PS1実行時経路を置き換えていない。PS1上でliblzmaを
+使えないためターゲット側LZMA2エンコーダは未実装、ブラウザ側はV2を明示的に
+`PENDING`として拒否する。したがって197,887 bytesはホスト圧縮の確認値であり、
+実機の音声転送時間や復元成功を意味しない。

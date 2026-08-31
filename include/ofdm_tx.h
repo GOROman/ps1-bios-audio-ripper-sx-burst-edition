@@ -32,4 +32,5 @@ void sx_ofdm_tx_release(void);
 void sx_ofdm_tx_set_audio_mode(unsigned mode);
 void sx_ofdm_tx_update(void);
 void sx_ofdm_tx_stop(void);
+void sx_ofdm_tx_play_fanfare(void);
 const sx_ofdm_tx_status_t *sx_ofdm_tx_status(void);

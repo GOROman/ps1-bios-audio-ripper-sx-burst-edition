@@ -32,8 +32,8 @@ const GEN_SRC = 'tests/ofdm_loopback_gen.c';
 const WORKER_SRC = 'web/ofdm-worker.js';
 
 function buildGenerator() {
-    const sources = ['tests/ofdm_loopback_gen.c', 'src/crc32.c', 'src/lzss.c', 'src/container.c',
-        'src/ofdm_packet.c', 'src/ofdm_mod.c', 'src/spu_adpcm.c'];
+    const sources = ['tests/ofdm_loopback_gen.c', 'src/crc32.c', 'src/lzss.c', 'src/deflate_fixed.c',
+        'src/container.c', 'src/ofdm_packet.c', 'src/inner_fec.c', 'src/ofdm_mod.c', 'src/spu_adpcm.c'];
     const newest = Math.max(...sources.map(f => fs.statSync(f).mtimeMs),
         fs.existsSync('include/ofdm.h') ? fs.statSync('include/ofdm.h').mtimeMs : 0);
     if (fs.existsSync(GEN_BIN) && fs.statSync(GEN_BIN).mtimeMs > newest) return;
@@ -221,7 +221,7 @@ function describe(options) {
 function once(clean, options) {
     const pcm = impair(clean, options);
     if (options.dropCount) {
-        const packetFrames = 2884;
+        const packetFrames = 2744;
         const from = options.dropAt * packetFrames;
         const to = Math.min(pcm.left.length, from + options.dropCount * packetFrames);
         pcm.left.fill(0, from, to);

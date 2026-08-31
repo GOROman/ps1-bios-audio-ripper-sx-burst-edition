@@ -74,7 +74,7 @@ select {
   #hud { top: 140px; right: 12px; font-size: clamp(1.25rem, 7vw, 2rem) !important; }
 }
 
-/* FSK: bit=1 -> visible white; bit=0 -> transparent (base). */
+/* Legacy V3 FSK indicator; Burst V6 uses the OFDM indicator below. */
 #activity.fsk-on {
   background-color: #eaf4ff;
   filter: drop-shadow(0 0 6px #9fd4ff);

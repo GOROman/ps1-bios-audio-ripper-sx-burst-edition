@@ -2,6 +2,7 @@
 #include "sx_format.h"
 
 #define LZSS_OVERHEAD(n) ((n) + (((n) + 7u) / 8u) + 1u)
+static uint8_t deflate_candidate[LZSS_OVERHEAD(SX_BLOCK_SIZE)];
 
 size_t sx_build_container_progress_mode(const uint8_t *src, size_t size, uint8_t *dst, size_t cap,
                                         sx_build_progress_fn progress, void *user,
@@ -16,11 +17,18 @@ size_t sx_build_container_progress_mode(const uint8_t *src, size_t size, uint8_t
         size_t offset = (size_t)index * SX_BLOCK_SIZE;
         size_t original = size - offset;
         if (original > SX_BLOCK_SIZE) original = SX_BLOCK_SIZE;
-        size_t packed = sx_lzss_encode(src + offset, original, compressed, sizeof(compressed));
-        uint8_t codec = mode == SX_CONTAINER_RAW_ONLY ? SX_CODEC_RAW :
-                        (packed && packed < original ? SX_CODEC_LZSS : SX_CODEC_RAW);
-        const uint8_t *payload = codec == SX_CODEC_LZSS ? compressed : src + offset;
-        size_t stored = codec == SX_CODEC_LZSS ? packed : original;
+        size_t lzss_size = sx_lzss_encode(src + offset, original, compressed, sizeof(compressed));
+        size_t deflate_size = sx_deflate_fixed_encode(src + offset, original,
+                                                       deflate_candidate, sizeof(deflate_candidate));
+        uint8_t codec = SX_CODEC_RAW;
+        const uint8_t *payload = src + offset;
+        size_t stored = original;
+        if (mode != SX_CONTAINER_RAW_ONLY && lzss_size && lzss_size < stored) {
+            codec = SX_CODEC_LZSS; payload = compressed; stored = lzss_size;
+        }
+        if (mode != SX_CONTAINER_RAW_ONLY && deflate_size && deflate_size < stored) {
+            codec = SX_CODEC_DEFLATE; payload = deflate_candidate; stored = deflate_size;
+        }
         if (out + sizeof(sx_block_header_t) + stored > cap) return 0;
         sx_block_header_t block = {
             .index = index, .codec = codec, .flags = 0,
@@ -74,6 +82,8 @@ size_t sx_extract_container(const uint8_t *src, size_t size, uint8_t *dst, size_
             memcpy(dst + out, src + in, block.stored_size); decoded = block.stored_size;
         } else if (block.codec == SX_CODEC_LZSS) {
             decoded = sx_lzss_decode(src + in, block.stored_size, dst + out, block.original_size);
+        } else if (block.codec == SX_CODEC_DEFLATE) {
+            decoded = sx_deflate_fixed_decode(src + in, block.stored_size, dst + out, block.original_size);
         } else return 0;
         if (decoded != block.original_size || sx_crc32(dst + out, decoded, 0) != block.original_crc32) return 0;
         in += block.stored_size; out += decoded;

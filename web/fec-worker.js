@@ -1,4 +1,4 @@
-const PAYLOAD=144;
+const PAYLOAD=280;
 const gfExp=new Uint8Array(512),gfLog=new Uint8Array(256);
 {let v=1;for(let i=0;i<255;i++){gfExp[i]=v;gfLog[v]=i;v<<=1;if(v&0x100)v^=0x11d}for(let i=255;i<512;i++)gfExp[i]=gfExp[i-255]}
 const gfMul=(a,b)=>(a&&b)?gfExp[gfLog[a]+gfLog[b]]:0;
@@ -30,8 +30,8 @@ onmessage=event=>{
   const rows=[...par.keys()].sort((a,b)=>a-b).slice(0,count),matrix=[],values=[];
   for(let at=0;at<count;at++){
     const row=rows[at],value=Uint8Array.from(par.get(row));
-    for(let index=0;index<k;index++){const shard=known.get(index);if(!shard)continue;const coefficient=gfInv(row^(4+index));for(let byte=0;byte<PAYLOAD;byte++)value[byte]^=gfMul(coefficient,shard[byte])}
-    const coefficients=new Uint8Array(count);for(let index=0;index<count;index++)coefficients[index]=gfInv(row^(4+missing[index]));
+    for(let index=0;index<k;index++){const shard=known.get(index);if(!shard)continue;const coefficient=gfInv(row^(6+index));for(let byte=0;byte<PAYLOAD;byte++)value[byte]^=gfMul(coefficient,shard[byte])}
+    const coefficients=new Uint8Array(count);for(let index=0;index<count;index++)coefficients[index]=gfInv(row^(6+missing[index]));
     matrix.push(coefficients);values.push(value);
   }
   const ok=solve(matrix,values,count),recovered=ok?values.map((value,index)=>[missing[index],value]):[];

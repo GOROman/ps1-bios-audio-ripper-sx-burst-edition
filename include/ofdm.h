@@ -3,16 +3,17 @@
 #include <stdint.h>
 
 #define SX_OFDM_MAGIC 0x314f5853u /* "SXO1" */
-#define SX_OFDM_VERSION 3u
-#define SX_OFDM_PACKET_BYTES 176u
+#define SX_OFDM_VERSION 4u
+#define SX_OFDM_PACKET_BYTES 312u
+#define SX_OFDM_WIRE_BYTES 352u
 #define SX_OFDM_FFT_SIZE 512u
-#define SX_OFDM_CP_SIZE 64u
+#define SX_OFDM_CP_SIZE 32u
 #define SX_OFDM_SYMBOLS_PACKET 5u
 #define SX_OFDM_FIRST_BIN 24u
 #define SX_OFDM_CARRIERS 96u
 #define SX_OFDM_DATA_CARRIERS 88u
-#define SX_OFDM_DATA_SHARDS 32u
-#define SX_OFDM_PARITY_SHARDS 4u
+#define SX_OFDM_DATA_SHARDS 16u
+#define SX_OFDM_PARITY_SHARDS 6u
 #define SX_OFDM_TOTAL_SHARDS (SX_OFDM_DATA_SHARDS + SX_OFDM_PARITY_SHARDS)
 
 typedef struct __attribute__((packed)) {
@@ -31,3 +32,7 @@ size_t sx_ofdm_group_count(size_t size);
 size_t sx_ofdm_packet_count(size_t size);
 int sx_ofdm_make_packet(const uint8_t *data, size_t size, uint32_t image_crc,
                         size_t packet_index, uint8_t out[SX_OFDM_PACKET_BYTES]);
+void sx_inner_fec_encode(const uint8_t input[SX_OFDM_PACKET_BYTES],
+                         uint8_t output[SX_OFDM_WIRE_BYTES]);
+int sx_inner_fec_decode(const uint8_t input[SX_OFDM_WIRE_BYTES],
+                        uint8_t output[SX_OFDM_PACKET_BYTES]);
