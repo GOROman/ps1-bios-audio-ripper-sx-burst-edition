@@ -24,7 +24,7 @@
 #ifndef SX_TRANSFER_SIZE
 #define SX_TRANSFER_SIZE SX_BIOS_SIZE /* full 512 KiB BIOS transfer */
 #endif
-#define SX_APP_VERSION "1.0"
+#define SX_APP_VERSION "2.0"
 
 static DISPENV disp[2];
 static DRAWENV draw[2];
